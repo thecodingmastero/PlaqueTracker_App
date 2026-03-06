@@ -1,2 +1,3 @@
 Flask
 requests
+-r ../../hydrogel_cv/requirements.txt
