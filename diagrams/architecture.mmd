@@ -1,0 +1,38 @@
+flowchart LR
+  MobileApp[Mobile App]
+  BLEDevice[PlaqueTracker Sensor (ESP32/XIAO)]
+  BLEGateway[BLE Gateway / Ingest API]
+  API[Gateway / Public API]
+  Auth[Authentication Service]
+  ImageProc[Image Processing Service]
+  Analytics[Analytics Service]
+  Reporting[Reporting Service]
+  Rewards[Rewards Service]
+  DB[(Postgres DB)]
+  S3[(Object Store / S3)]
+  MessageBus[(Message Bus)]
+
+  BLEDevice -->|BLE/WiFi packets| BLEGateway
+  MobileApp -->|HTTPS / Auth| API
+  API --> Auth
+  API --> BLEGateway
+  API --> ImageProc
+  BLEGateway --> MessageBus
+  ImageProc --> MessageBus
+  MessageBus --> Analytics
+  Analytics --> DB
+  BLEGateway --> DB
+  ImageProc --> S3
+  Reporting --> S3
+  Reporting --> DB
+  Rewards --> DB
+  API --> Reporting
+  API --> Rewards
+
+  subgraph External
+    DentistDashboard[ Dentist Dashboard / Clinic Portal ]
+    ThirdParties[ Third-party Provider APIs ]
+  end
+
+  Reporting --> DentistDashboard
+  Auth --> ThirdParties

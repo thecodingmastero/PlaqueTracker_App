@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-03-03T04:45:42.481679Z",
+  "source_type": "sensor_wifi",
+  "device_id": "uno-r4-wifi",
+  "pH": 7.91,
+  "estimated_pH": 7.91,
+  "classification": "High pH",
+  "r_hz": 10987.5,
+  "g_hz": 11450.0,
+  "b_hz": 13837.5,
+  "out_state": 0,
+  "seq": 44,
+  "battery": null
+}

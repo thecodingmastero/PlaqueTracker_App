@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>PlaqueTracker — Dentist Recommendations</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+  </head>
+  <body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">PlaqueTracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav me-auto">
+            <li class="nav-item"><a class="nav-link" href="/profile">Profile</a></li>
+            <li class="nav-item"><a class="nav-link" href="/scans">Scans</a></li>
+            <li class="nav-item"><a class="nav-link" href="/trends">Trends</a></li>
+            <li class="nav-item"><a class="nav-link" href="/rewards">Rewards</a></li>
+            <li class="nav-item"><a class="nav-link active" href="/dentists">Dentists</a></li>
+            <li class="nav-item"><a class="nav-link" href="/ai-recommendations">AI Recommendations</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <div id="toastHost" class="position-fixed top-0 end-0 p-3" style="z-index: 1080;"></div>
+      <h2>Dentist Recommendations 🏥</h2>
+      <p class="text-muted">Find nearby dentists based on your location or city/state/country search.</p>
+
+      <div class="mb-3">
+        <label for="city-input" class="form-label">Search dentists by city/state/country or ZIP</label>
+        <div class="input-group">
+          <input id="city-input" class="form-control" placeholder="City" />
+          <input id="state-input" class="form-control" placeholder="State / Province" />
+          <input id="country-input" class="form-control" placeholder="Country" />
+          <input id="zip-input" class="form-control" placeholder="ZIP / Postal Code" />
+          <button id="location-search" class="btn btn-primary">Search</button>
+          <button id="use-location" class="btn btn-outline-secondary">Use My Location</button>
+        </div>
+      </div>
+
+      <div class="my-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h5 class="mb-0">Google Maps</h5>
+          <a id="maps-link" class="btn btn-sm btn-outline-primary" href="https://www.google.com/maps/search/?api=1&query=dentist%20near%20me" target="_blank" rel="noopener">Open in Google Maps</a>
+        </div>
+        <iframe id="maps-frame" title="Google Maps dentist search" style="width:100%;height:340px;border:1px solid #d7e8ff;border-radius:14px;" loading="lazy" referrerpolicy="no-referrer-when-downgrade" src="https://www.google.com/maps?q=dentist%20near%20me&output=embed"></iframe>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    let userCoords = null;
+
+    function showToast(message, type){
+      const host = document.getElementById('toastHost');
+      if(!host) return;
+      const el = document.createElement('div');
+      el.className = `toast align-items-center text-bg-${type || 'primary'} border-0 mb-2`;
+      el.setAttribute('role', 'alert');
+      el.setAttribute('aria-live', 'assertive');
+      el.setAttribute('aria-atomic', 'true');
+      el.innerHTML = `<div class="d-flex"><div class="toast-body">${message}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button></div>`;
+      host.appendChild(el);
+      const toast = new bootstrap.Toast(el, {delay: 2600});
+      toast.show();
+      el.addEventListener('hidden.bs.toast', ()=> el.remove());
+    }
+
+    function renderDentists(payload){
+      const j = payload || {};
+      if(j.status !== 'ok') return;
+
+      const mapsUrl = j.google_maps_url || 'https://www.google.com/maps/search/?api=1&query=dentist%20near%20me';
+      const mapsFrame = document.getElementById('maps-frame');
+      const mapsLink = document.getElementById('maps-link');
+      if(mapsFrame){
+        const embedUrl = mapsUrl.replace('/maps/search/?api=1&query=', '/maps?q=') + '&output=embed';
+        mapsFrame.src = embedUrl;
+      }
+      if(mapsLink){
+        mapsLink.href = mapsUrl;
+      }
+    }
+
+    async function loadDentistsByLocation(city, state, country, zip){
+      const params = new URLSearchParams();
+      if(city) params.set('city', city);
+      if(state) params.set('state', state);
+      if(country) params.set('country', country);
+      if(zip) params.set('zip', zip);
+      const qs = params.toString();
+      const url = '/api/dentists' + (qs ? ('?' + qs) : '');
+      const r = await fetch(url);
+      const j = await r.json();
+      userCoords = null;
+      renderDentists(j);
+    }
+
+    async function loadDentistsByCoords(lat, lon){
+      const r = await fetch(`/api/dentists?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
+      const j = await r.json();
+      userCoords = {lat, lon};
+      renderDentists(j);
+      try{
+        const rr = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
+        const geo = await rr.json();
+        const addr = geo && geo.address ? geo.address : {};
+        const city = addr.city || addr.town || addr.village || '';
+        const state = addr.state || addr.county || '';
+        const country = addr.country || '';
+        const zip = addr.postcode || '';
+        if(city) document.getElementById('city-input').value = city;
+        if(state) document.getElementById('state-input').value = state;
+        if(country) document.getElementById('country-input').value = country;
+        if(zip) document.getElementById('zip-input').value = zip;
+      }catch(e){ console.warn('reverse geocode failed', e); }
+    }
+
+    document.getElementById('location-search').addEventListener('click', ()=>{
+      const city = document.getElementById('city-input').value.trim();
+      const state = document.getElementById('state-input').value.trim();
+      const country = document.getElementById('country-input').value.trim();
+      const zip = document.getElementById('zip-input').value.trim();
+      loadDentistsByLocation(city, state, country, zip);
+    });
+
+    document.getElementById('use-location').addEventListener('click', ()=>{
+      if(navigator && navigator.geolocation){
+        navigator.geolocation.getCurrentPosition((pos)=>{
+          loadDentistsByCoords(pos.coords.latitude, pos.coords.longitude);
+        }, ()=>{
+          showToast('Could not get your location. Try city/state/country search instead.', 'warning');
+        });
+      } else {
+        showToast('Geolocation is not available in this browser.', 'warning');
+      }
+    });
+
+    if(navigator && navigator.geolocation){
+      navigator.geolocation.getCurrentPosition((pos)=>{
+        loadDentistsByCoords(pos.coords.latitude, pos.coords.longitude);
+      }, ()=>{
+        loadDentistsByLocation();
+      });
+    } else {
+      loadDentistsByLocation();
+    }
+    </script>
+  </body>
+</html>

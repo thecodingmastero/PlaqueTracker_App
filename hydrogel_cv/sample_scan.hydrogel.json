@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-02-26T04:04:33.662969Z",
+  "source_type": "image",
+  "estimated_pH": 5.09,
+  "confidence": 0.85,
+  "model_version": "model.pkl",
+  "processing_metadata": {
+    "white_balance": "grayworld",
+    "roi_size": 120,
+    "mean_rgb": [
+      158.16,
+      159.16,
+      128.86
+    ],
+    "mean_lab": [
+      165.0,
+      122.0,
+      144.0
+    ]
+  }
+}

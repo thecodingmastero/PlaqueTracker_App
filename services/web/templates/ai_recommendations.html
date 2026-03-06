@@ -1,0 +1,170 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>PlaqueTracker — AI Recommendations</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">PlaqueTracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav me-auto">
+            <li class="nav-item"><a class="nav-link" href="/profile">Profile</a></li>
+            <li class="nav-item"><a class="nav-link" href="/scans">Scans</a></li>
+            <li class="nav-item"><a class="nav-link" href="/trends">Trends</a></li>
+            <li class="nav-item"><a class="nav-link" href="/rewards">Rewards</a></li>
+            <li class="nav-item"><a class="nav-link" href="/dentists">Dentists</a></li>
+            <li class="nav-item"><a class="nav-link active" href="/ai-recommendations">AI Recommendations</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <h2>AI Recommendations 🤖</h2>
+      <p class="text-muted">Smart oral-care suggestions based on your recent scan trends.</p>
+      <div class="mb-3">
+        <span id="ai-source-badge" class="badge text-bg-secondary">AI Source: —</span>
+      </div>
+      <div id="ai-error" class="alert alert-warning py-2 px-3 d-none"></div>
+
+      <div id="ph-summary" class="card p-3 mb-3">
+        <div><strong>Latest pH:</strong> <span id="last-ph">—</span></div>
+        <div><strong>Average (recent):</strong> <span id="avg-ph">—</span></div>
+        <div><strong>Trend change:</strong> <span id="trend-delta">—</span></div>
+      </div>
+
+      <div class="card p-3 mb-3">
+        <h5>Predicted Oral Risk (from trend)</h5>
+        <div class="row g-2 mt-1">
+          <div class="col-md-4">
+            <div class="p-2 border rounded">
+              <div><strong>Cavity</strong></div>
+              <div id="risk-cavity">—</div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="p-2 border rounded">
+              <div><strong>Plaque</strong></div>
+              <div id="risk-plaque">—</div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="p-2 border rounded">
+              <div><strong>Gum disease</strong></div>
+              <div id="risk-gum">—</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-3 mb-3">
+        <h5>Risk Trend History</h5>
+        <canvas id="riskHistoryChart" height="110"></canvas>
+      </div>
+
+      <div class="card p-3">
+        <h5>What AI suggests for you</h5>
+        <ul id="ai-list" class="list-group mt-2"></ul>
+      </div>
+
+      <div class="card p-3 mt-3">
+        <h5>Dietary recommendations</h5>
+        <ul id="dietary-list" class="list-group mt-2"></ul>
+      </div>
+    </div>
+
+    <script>
+      let riskChart = null;
+
+      function drawRiskHistory(riskHistory){
+        const el = document.getElementById('riskHistoryChart');
+        if(!el || !riskHistory) return;
+        if(riskChart){ riskChart.destroy(); }
+
+        const labels = (riskHistory.labels || []).map(v => (v || '').slice(5, 10));
+        riskChart = new Chart(el, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              {label:'Cavity', data: riskHistory.cavity || [], borderColor:'#a074d2', backgroundColor:'rgba(160,116,210,0.15)', tension:0.3},
+              {label:'Plaque', data: riskHistory.plaque || [], borderColor:'#728cb8', backgroundColor:'rgba(114,140,184,0.15)', tension:0.3},
+              {label:'Gum', data: riskHistory.gum_disease || [], borderColor:'#96d4ea', backgroundColor:'rgba(150,212,234,0.15)', tension:0.3}
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: { y: { min: 0, max: 100, title: { display: true, text: 'Risk %' } } }
+          }
+        });
+      }
+
+      async function loadAiRecs(){
+        const r = await fetch('/api/ai-recommendations');
+        const j = await r.json();
+        if(j.status !== 'ok') return;
+
+        document.getElementById('last-ph').textContent = j.last_ph ?? '—';
+        document.getElementById('avg-ph').textContent = j.avg_ph ?? '—';
+        document.getElementById('trend-delta').textContent = (j.trend_delta ?? '—');
+        const source = (j.ai_source || 'heuristic').toLowerCase();
+        const badge = document.getElementById('ai-source-badge');
+        if(badge){
+          const readable = source === 'openrouter' ? 'OpenRouter' : 'Heuristic';
+          badge.textContent = `AI Source: ${readable}`;
+          badge.classList.remove('text-bg-secondary', 'text-bg-success');
+          badge.classList.add(source === 'openrouter' ? 'text-bg-success' : 'text-bg-secondary');
+        }
+        const errEl = document.getElementById('ai-error');
+        if(errEl){
+          if(j.ai_error){
+            errEl.classList.remove('d-none');
+            errEl.textContent = `AI fallback reason: ${j.ai_error}`;
+          } else {
+            errEl.classList.add('d-none');
+            errEl.textContent = '';
+          }
+        }
+
+        const risks = j.risks || {};
+        const cavity = risks.cavity || {};
+        const plaque = risks.plaque || {};
+        const gum = risks.gum_disease || {};
+        document.getElementById('risk-cavity').textContent = (cavity.score ?? '—') + (cavity.band ? `% (${cavity.band})` : '');
+        document.getElementById('risk-plaque').textContent = (plaque.score ?? '—') + (plaque.band ? `% (${plaque.band})` : '');
+        document.getElementById('risk-gum').textContent = (gum.score ?? '—') + (gum.band ? `% (${gum.band})` : '');
+
+        drawRiskHistory(j.risk_history || {});
+
+        const list = document.getElementById('ai-list');
+        list.innerHTML = '';
+        (j.ai_suggestions || []).forEach(rec => {
+          const li = document.createElement('li');
+          li.className = 'list-group-item';
+          li.textContent = rec;
+          list.appendChild(li);
+        });
+
+        const dietaryList = document.getElementById('dietary-list');
+        if(dietaryList){
+          dietaryList.innerHTML = '';
+          (j.dietary_recommendations || []).forEach(rec => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item';
+            li.textContent = rec;
+            dietaryList.appendChild(li);
+          });
+        }
+      }
+
+      loadAiRecs();
+    </script>
+  </body>
+</html>

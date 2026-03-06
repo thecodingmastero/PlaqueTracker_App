@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>PlaqueTracker — Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">PlaqueTracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav me-auto">
+            <li class="nav-item"><a class="nav-link" href="/profile">Profile</a></li>
+            <li class="nav-item"><a class="nav-link" href="/scans">Scans</a></li>
+            <li class="nav-item"><a class="nav-link" href="/hydrogel">Hydrogel</a></li>
+            <li class="nav-item"><a class="nav-link" href="/trends">Trends</a></li>
+            <li class="nav-item"><a class="nav-link" href="/rewards">Rewards</a></li>
+            <li class="nav-item"><a class="nav-link" href="/dentists">Dentists</a></li>
+            <li class="nav-item"><a class="nav-link" href="/ai-recommendations">AI Recommendations</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container">
+      <div class="row">
+        <div class="col-md-4">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h5 class="card-title"><span class="emoji-title">👋</span>Hey, {{ profile.name }}!</h5>
+              <p class="card-text">Age {{ profile.age }} — keep smiling 😄</p>
+              <a href="/profile" class="btn btn-sm btn-outline-primary">Edit Profile ✏️</a>
+            </div>
+          </div>
+
+          <div class="card mb-3">
+            <div class="card-body">
+              <h5 class="card-title">Latest Scan 🛰️</h5>
+              {% if latest %}
+                <p class="h3 fun-hero">pH {{ latest.estimated_pH or latest.pH }} <span class="bounce">🌈</span></p>
+                <p class="text-muted">{{ latest.timestamp }}</p>
+              {% else %}
+                <p class="text-muted">No scans yet — try uploading a photo! 📸</p>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <h5 class="card-title">Recommendations</h5>
+              <ul>
+                {% for r in recommendations %}
+                  <li>{{ r }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-md-8">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h5 class="card-title">Overview</h5>
+              <p class="mb-1">Total scans: <strong>{{ series|length }}</strong></p>
+              <p class="mb-1">Rewards XP: <strong>{{ rewards.xp }}</strong></p>
+              <p class="mb-0">Badges: <strong>{{ rewards.badges|join(', ') }}</strong></p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <h5 class="card-title">Quick Actions</h5>
+              <a href="/scans" class="btn btn-primary">View Scans & Trends</a>
+              <a href="/hydrogel" class="btn btn-outline-primary">Hydrogel Plaque Scan</a>
+              <a href="/dentists" class="btn btn-outline-primary">Find Dentists</a>
+              <a href="/ai-recommendations" class="btn btn-outline-primary">AI Tips</a>
+              <a href="/devices" class="btn btn-outline-secondary">Devices</a>
+              <a href="/reports" class="btn btn-outline-secondary">Reports</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Overview page: no inline charts here (scans/trends page holds charts) -->
+  </body>
+</html>

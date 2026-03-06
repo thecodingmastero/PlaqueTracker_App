@@ -1,0 +1,5 @@
+{
+  "model_path": "model.pkl",
+  "roi_size": 120,
+  "white_balance": "grayworld"
+}

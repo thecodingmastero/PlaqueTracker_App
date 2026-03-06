@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>PlaqueTracker — Recommendations</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+  </head>
+  <body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">PlaqueTracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav me-auto">
+            <li class="nav-item"><a class="nav-link" href="/profile">Profile</a></li>
+            <li class="nav-item"><a class="nav-link" href="/scans">Scans</a></li>
+            <li class="nav-item"><a class="nav-link" href="/trends">Trends</a></li>
+            <li class="nav-item"><a class="nav-link" href="/rewards">Rewards</a></li>
+            <li class="nav-item"><a class="nav-link" href="/dentists">Dentists</a></li>
+            <li class="nav-item"><a class="nav-link active" href="/recommendations">Recommendations</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <div id="toastHost" class="position-fixed top-0 end-0 p-3" style="z-index: 1080;"></div>
+      <h2>AI & Dentist Recommendations 🦷</h2>
+      <p class="text-muted">Personalized suggestions based on your recent scans.</p>
+
+      <div class="mb-3">
+        <label for="city-input" class="form-label">Search dentists by city/state/country or ZIP</label>
+        <div class="input-group">
+          <input id="city-input" class="form-control" placeholder="City" />
+          <input id="state-input" class="form-control" placeholder="State / Province" />
+          <input id="country-input" class="form-control" placeholder="Country" />
+          <input id="zip-input" class="form-control" placeholder="ZIP / Postal Code" />
+          <button id="location-search" class="btn btn-primary">Search</button>
+        </div>
+      </div>
+
+      <div id="ai-suggestions" class="mb-4">
+        <h4>AI Suggestions <span id="ai-source-badge" class="badge text-bg-secondary ms-2">Source: —</span></h4>
+        <div id="ai-error" class="alert alert-warning py-2 px-3 mt-2 d-none"></div>
+        <ul id="ai-list" class="list-group"></ul>
+      </div>
+
+      <div id="dietary-suggestions" class="mb-4">
+        <h4>Dietary Suggestions</h4>
+        <ul id="dietary-list" class="list-group"></ul>
+      </div>
+
+      <div id="ph-summary" class="mb-4">
+        <strong>Latest pH:</strong> <span id="last-ph">—</span>
+        &nbsp; <strong>Average (recent):</strong> <span id="avg-ph">—</span>
+      </div>
+
+      <div class="my-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h5 class="mb-0">Google Maps</h5>
+          <a id="maps-link" class="btn btn-sm btn-outline-primary" href="https://www.google.com/maps/search/?api=1&query=dentist%20near%20me" target="_blank" rel="noopener">Open in Google Maps</a>
+        </div>
+        <iframe id="maps-frame" title="Google Maps dentist search" style="width:100%;height:340px;border:1px solid #d7e8ff;border-radius:14px;" loading="lazy" referrerpolicy="no-referrer-when-downgrade" src="https://www.google.com/maps?q=dentist%20near%20me&output=embed"></iframe>
+      </div>
+
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    let userCoords = null;
+
+    function renderFromPayload(j){
+      if(!j || j.status !== 'ok') return;
+      const aiList = document.getElementById('ai-list');
+      aiList.innerHTML = '';
+      (j.ai_suggestions||[]).forEach(s=>{
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = s;
+        aiList.appendChild(li);
+      });
+
+      const dietaryList = document.getElementById('dietary-list');
+      if(dietaryList){
+        dietaryList.innerHTML = '';
+        (j.dietary_recommendations||[]).forEach(s=>{
+          const li = document.createElement('li');
+          li.className = 'list-group-item';
+          li.textContent = s;
+          dietaryList.appendChild(li);
+        });
+      }
+      const source = (j.ai_source || 'heuristic').toLowerCase();
+      const badge = document.getElementById('ai-source-badge');
+      if(badge){
+        badge.textContent = `Source: ${source === 'openrouter' ? 'OpenRouter' : 'Heuristic'}`;
+        badge.classList.remove('text-bg-secondary', 'text-bg-success');
+        badge.classList.add(source === 'openrouter' ? 'text-bg-success' : 'text-bg-secondary');
+      }
+      const errEl = document.getElementById('ai-error');
+      if(errEl){
+        if(j.ai_error){
+          errEl.classList.remove('d-none');
+          errEl.textContent = `AI fallback reason: ${j.ai_error}`;
+        } else {
+          errEl.classList.add('d-none');
+          errEl.textContent = '';
+        }
+      }
+      document.getElementById('last-ph').textContent = j.last_ph ?? '—';
+      document.getElementById('avg-ph').textContent = j.avg_ph ?? '—';
+
+      const mapsUrl = j.google_maps_url || 'https://www.google.com/maps/search/?api=1&query=dentist%20near%20me';
+      const mapsFrame = document.getElementById('maps-frame');
+      const mapsLink = document.getElementById('maps-link');
+      if(mapsFrame){
+        const embedUrl = mapsUrl.replace('/maps/search/?api=1&query=', '/maps?q=') + '&output=embed';
+        mapsFrame.src = embedUrl;
+      }
+      if(mapsLink){
+        mapsLink.href = mapsUrl;
+      }
+    }
+
+    async function loadRecsByLocation(city, state, country, zip){
+      const params = new URLSearchParams();
+      if(city) params.set('city', city);
+      if(state) params.set('state', state);
+      if(country) params.set('country', country);
+      if(zip) params.set('zip', zip);
+      const qs = params.toString();
+      const url = '/api/recommendations' + (qs ? ('?' + qs) : '');
+      const r = await fetch(url);
+      const j = await r.json();
+      renderFromPayload(j);
+    }
+
+    async function loadRecsByCoords(lat, lon){
+      const r = await fetch(`/api/recommendations?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
+      const j = await r.json();
+      userCoords = {lat, lon};
+      renderFromPayload(j);
+      try{
+        const rr = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
+        const geo = await rr.json();
+        const addr = geo && geo.address ? geo.address : {};
+        const city = addr.city || addr.town || addr.village || '';
+        const state = addr.state || addr.county || '';
+        const country = addr.country || '';
+        const zip = addr.postcode || '';
+        if(city){ document.getElementById('city-input').value = city; }
+        if(state){ document.getElementById('state-input').value = state; }
+        if(country){ document.getElementById('country-input').value = country; }
+        if(zip){ document.getElementById('zip-input').value = zip; }
+      }catch(e){ console.warn('reverse geocode failed', e); }
+    }
+
+    function showToast(message, type){
+      const host = document.getElementById('toastHost');
+      if(!host) return;
+      const el = document.createElement('div');
+      el.className = `toast align-items-center text-bg-${type || 'primary'} border-0 mb-2`;
+      el.setAttribute('role', 'alert');
+      el.setAttribute('aria-live', 'assertive');
+      el.setAttribute('aria-atomic', 'true');
+      el.innerHTML = `<div class="d-flex"><div class="toast-body">${message}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button></div>`;
+      host.appendChild(el);
+      const toast = new bootstrap.Toast(el, {delay: 2500});
+      toast.show();
+      el.addEventListener('hidden.bs.toast', ()=> el.remove());
+    }
+
+    document.getElementById('location-search').addEventListener('click', ()=>{
+      const city = document.getElementById('city-input').value.trim();
+      const state = document.getElementById('state-input').value.trim();
+      const country = document.getElementById('country-input').value.trim();
+      const zip = document.getElementById('zip-input').value.trim();
+      userCoords = null;
+      loadRecsByLocation(city, state, country, zip);
+    });
+
+    // try browser geolocation auto-fill
+    if(navigator && navigator.geolocation){
+      navigator.geolocation.getCurrentPosition((pos)=>{
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        loadRecsByCoords(lat, lon).catch(()=>{ loadRecsByLocation(); });
+      }, ()=>{ loadRecsByLocation(); });
+    } else {
+      loadRecsByLocation();
+    }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,568 @@
+/*
+  Arduino UNO R4 WiFi + TCS3200
+  Sends classification + channel frequencies to PlaqueTracker over Wi-Fi.
+
+  Set:
+    WIFI_SSID / WIFI_PASS
+    SERVER_HOST (your computer LAN IP)
+    SERVER_PORT (usually 8000)
+    DEVICE_KEY (optional; must match DEVICE_INGEST_KEY env var on server)
+*/
+
+#include <WiFiS3.h>
+#include <string.h>
+#include <stdio.h>
+
+#if __has_include(<ArduinoBLE.h>)
+#include <ArduinoBLE.h>
+#define HAS_ARDUINO_BLE 1
+#else
+#define HAS_ARDUINO_BLE 0
+#endif
+
+#define S0 4
+#define S1 5
+#define S2 6
+#define S3 7
+#define OUT_PIN 8
+#define LED_PIN 9
+
+const char DEFAULT_WIFI_SSID[] = "ORBI83";
+const char DEFAULT_WIFI_PASS[] = "sweetbolt655";
+const char SERVER_HOST[] = "192.168.1.79";
+const int SERVER_PORT = 8000;
+const char DEVICE_ID[] = "uno-r4-wifi";
+const char DEVICE_KEY[] = "";
+
+const uint32_t SETTLE_MS = 40;
+const uint32_t MEASURE_MS = 80;
+const uint32_t LOOP_DELAY_MS = 500;
+const uint32_t SEND_INTERVAL_MS = 5000;
+const uint32_t CONTROL_CHECK_INTERVAL_MS = 10000;
+const uint32_t WIFI_RETRY_INTERVAL_MS = 5000;
+
+const float GREEN_DOM_RATIO = 1.15f;
+const float WARM_BIAS = 1.10f;
+const float COOL_BIAS = 1.10f;
+const float YELLOW_RG_CLOSE = 0.10f;
+const float YELLOW_BLUE_DROP = 0.80f;
+const float NEUTRAL_RB_CLOSE = 0.14f;
+const float NEUTRAL_G_FLOOR = 0.80f;
+const bool PH_HIGH_WHEN_RB_HIGH = false;
+const float RB_RATIO_AT_PH4 = 0.65f;
+const float RB_RATIO_AT_PH7 = 0.95f;
+const float RB_RATIO_AT_PH10 = 1.35f;
+const float PH_LOW_SIDE_END = 7.00f;
+const float PH_LOW_SIDE_GAIN = 0.45f;
+const float PH_HIGH_SIDE_START = 7.20f;
+const float PH_HIGH_SIDE_GAIN = 0.42f;
+const float NEUTRAL_PH_TARGET = 7.0f;
+const float NEUTRAL_PULL = 0.85f;
+
+WiFiClient client;
+uint32_t seqNum = 0;
+uint32_t lastSendMs = 0;
+uint32_t lastControlCheckMs = 0;
+uint32_t lastWifiRetryMs = 0;
+bool scanningEnabled = true;
+char wifiSsid[33] = "";
+char wifiPass[65] = "";
+
+#if HAS_ARDUINO_BLE
+BLEService plaqueService("19B10000-E8F2-537E-4F6C-D104768A1214");
+BLEStringCharacteristic readingCharacteristic("19B10001-E8F2-537E-4F6C-D104768A1214", BLERead | BLENotify, 180);
+BLEByteCharacteristic wifiStatusCharacteristic("19B10002-E8F2-537E-4F6C-D104768A1214", BLERead | BLENotify);
+#endif
+
+static inline float absf(float x) { return (x < 0) ? -x : x; }
+static inline float clampf(float v, float lo, float hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+void trimLine(String &s) {
+  while (s.length() > 0 && (s[s.length() - 1] == '\r' || s[s.length() - 1] == '\n' || s[s.length() - 1] == ' ')) {
+    s.remove(s.length() - 1);
+  }
+  while (s.length() > 0 && s[0] == ' ') {
+    s.remove(0, 1);
+  }
+}
+
+String readSerialLine(uint32_t timeoutMs = 30000, uint32_t idleCompleteMs = 900) {
+  String line = "";
+  uint32_t start = millis();
+  uint32_t lastRx = 0;
+
+  while ((millis() - start) < timeoutMs) {
+    while (Serial.available()) {
+      char c = (char)Serial.read();
+      lastRx = millis();
+      if (c == '\n' || c == '\r') {
+        trimLine(line);
+        return line;
+      }
+      line += c;
+    }
+
+    if (line.length() > 0 && lastRx > 0 && (millis() - lastRx) >= idleCompleteMs) {
+      trimLine(line);
+      return line;
+    }
+
+    delay(10);
+  }
+
+  trimLine(line);
+  return line;
+}
+
+bool connectWifiWithCreds(const char* ssid, const char* pass, uint32_t timeoutMs) {
+  if (ssid == nullptr || strlen(ssid) == 0) return false;
+
+  WiFi.disconnect();
+  delay(150);
+
+  Serial.print("Connecting to SSID: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, pass);
+
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("WiFi connected. IP=");
+    Serial.println(WiFi.localIP());
+    return true;
+  }
+
+  Serial.print("WiFi connect failed. status=");
+  Serial.println((int)WiFi.status());
+  return false;
+}
+
+void setupBle() {
+#if HAS_ARDUINO_BLE
+  if (!BLE.begin()) {
+    Serial.println("BLE init failed");
+    return;
+  }
+
+  BLE.setLocalName("PlaqueTracker");
+  BLE.setDeviceName("PlaqueTracker");
+  BLE.setAdvertisedService(plaqueService);
+
+  plaqueService.addCharacteristic(readingCharacteristic);
+  plaqueService.addCharacteristic(wifiStatusCharacteristic);
+  BLE.addService(plaqueService);
+
+  readingCharacteristic.writeValue("ready");
+  wifiStatusCharacteristic.writeValue((byte)0);
+
+  BLE.advertise();
+  Serial.println("BLE advertising: PlaqueTracker");
+#else
+  Serial.println("ArduinoBLE not installed: BLE disabled (WiFi still active)");
+#endif
+}
+
+bool bleTransportActive() {
+#if HAS_ARDUINO_BLE
+  BLE.poll();
+  return readingCharacteristic.subscribed();
+#else
+  return false;
+#endif
+}
+
+bool publishBleReading(float r, float g, float b, const char* label, float pH) {
+#if HAS_ARDUINO_BLE
+  BLE.poll();
+
+  bool subscribed = readingCharacteristic.subscribed();
+  wifiStatusCharacteristic.writeValue((byte)(WiFi.status() == WL_CONNECTED ? 1 : 0));
+  if (!subscribed) {
+    return false;
+  }
+
+  char payload[180];
+  snprintf(payload, sizeof(payload), "{\"label\":\"%s\",\"pH\":%.2f,\"r\":%.1f,\"g\":%.1f,\"b\":%.1f}", label, pH, r, g, b);
+  readingCharacteristic.writeValue(payload);
+  return true;
+#endif
+
+  return false;
+}
+
+void printWifiScan() {
+  Serial.println("Scanning nearby WiFi...");
+  int n = WiFi.scanNetworks();
+  if (n <= 0) {
+    Serial.println("No WiFi networks found.");
+    return;
+  }
+  Serial.println("Available WiFi networks:");
+  for (int i = 0; i < n; i++) {
+    Serial.print("  ");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    Serial.print(WiFi.SSID(i));
+    Serial.print(" (RSSI ");
+    Serial.print(WiFi.RSSI(i));
+    Serial.println(")");
+  }
+}
+
+void promptForWifiCredentials() {
+  Serial.println("Enter WiFi SSID and press Send (or type 'scan' to list networks):");
+  String ssidIn = readSerialLine(45000, 900);
+  trimLine(ssidIn);
+
+  if (ssidIn.length() == 0) {
+    Serial.println("No SSID entered (timeout). Will ask again.");
+    return;
+  }
+
+  if (ssidIn.equalsIgnoreCase("scan")) {
+    printWifiScan();
+    Serial.println("Now enter SSID and press Send:");
+    ssidIn = readSerialLine(45000, 900);
+    trimLine(ssidIn);
+    if (ssidIn.length() == 0) {
+      Serial.println("No SSID entered after scan.");
+      return;
+    }
+  }
+
+  String chosenSsid = ssidIn;
+
+  Serial.print("Enter WiFi password for ");
+  Serial.print(chosenSsid);
+  Serial.println(" (leave blank for open network), then press Send:");
+  String passIn = readSerialLine(45000, 900);
+  trimLine(passIn);
+
+  chosenSsid.toCharArray(wifiSsid, sizeof(wifiSsid));
+  passIn.toCharArray(wifiPass, sizeof(wifiPass));
+}
+
+void ensureWifiSetup() {
+  if (strlen(DEFAULT_WIFI_SSID) > 0) {
+    strncpy(wifiSsid, DEFAULT_WIFI_SSID, sizeof(wifiSsid) - 1);
+    wifiSsid[sizeof(wifiSsid) - 1] = '\0';
+    strncpy(wifiPass, DEFAULT_WIFI_PASS, sizeof(wifiPass) - 1);
+    wifiPass[sizeof(wifiPass) - 1] = '\0';
+    return;
+  }
+
+  Serial.println();
+  Serial.println("=== WiFi setup required ===");
+  Serial.println("Open Serial Monitor at 115200 baud.");
+  Serial.println("Tip: set line ending to 'No line ending' OR 'Newline' and press Send.");
+
+  if (strlen(DEFAULT_WIFI_SSID) > 0) {
+    Serial.print("Trying default WiFi first: ");
+    Serial.println(DEFAULT_WIFI_SSID);
+    strncpy(wifiSsid, DEFAULT_WIFI_SSID, sizeof(wifiSsid) - 1);
+    wifiSsid[sizeof(wifiSsid) - 1] = '\0';
+    strncpy(wifiPass, DEFAULT_WIFI_PASS, sizeof(wifiPass) - 1);
+    wifiPass[sizeof(wifiPass) - 1] = '\0';
+    if (connectWifiWithCreds(wifiSsid, wifiPass, 12000)) {
+      return;
+    }
+    Serial.println("Default WiFi failed. Falling back to manual entry.");
+    wifiSsid[0] = '\0';
+    wifiPass[0] = '\0';
+  }
+
+  while (strlen(wifiSsid) == 0) {
+    promptForWifiCredentials();
+    if (strlen(wifiSsid) == 0) {
+      Serial.println("Still no valid SSID received. Retrying prompt...");
+      delay(1200);
+    }
+  }
+}
+
+float measureFreqHz(uint32_t windowMs) {
+  uint32_t start = millis();
+  int last = digitalRead(OUT_PIN);
+  uint32_t edges = 0;
+
+  while ((millis() - start) < windowMs) {
+    int v = digitalRead(OUT_PIN);
+    if (last == HIGH && v == LOW) edges++;
+    last = v;
+  }
+  return (edges * 1000.0f) / (float)windowMs;
+}
+
+float readChannelHz(bool s2, bool s3) {
+  digitalWrite(S2, s2);
+  digitalWrite(S3, s3);
+  delay(SETTLE_MS);
+  return measureFreqHz(MEASURE_MS);
+}
+
+const char* classifyPH(float r, float g, float b) {
+  if (r < 1.0f && g < 1.0f && b < 1.0f) return "NO SIGNAL";
+
+  float rgAvg = (r + g) / 2.0f;
+  float rbAvg = (r + b) / 2.0f;
+  float rbRatio = r / (b + 0.001f);
+  float minRB = (r < b) ? r : b;
+  bool rgClose = (absf(r - g) / (rgAvg + 0.001f)) <= YELLOW_RG_CLOSE;
+  bool blueLower = (b <= rgAvg * YELLOW_BLUE_DROP);
+  bool isYellow = rgClose && blueLower;
+
+  bool neutralBand = (absf(r - b) / (rbAvg + 0.001f)) <= NEUTRAL_RB_CLOSE;
+  bool greenNotLow = g >= (minRB * NEUTRAL_G_FLOOR);
+  bool isGreenOnly = (!isYellow) && (g >= r * GREEN_DOM_RATIO) && (g >= b * GREEN_DOM_RATIO);
+  bool isWarm = (!isYellow) && (rbRatio >= WARM_BIAS);
+  bool isCool = (!isYellow) && (rbRatio <= (1.0f / COOL_BIAS));
+  bool isLowPH = PH_HIGH_WHEN_RB_HIGH ? isCool : isWarm;
+  bool isHighPH = PH_HIGH_WHEN_RB_HIGH ? isWarm : isCool;
+  bool isNeutral = (!isYellow) && (isGreenOnly || (neutralBand && greenNotLow) || (!isLowPH && !isHighPH));
+
+  if (isYellow) return "pH unclear";
+  if (isNeutral) return "Neutral pH";
+  if (isLowPH) return "Low pH";
+  if (isHighPH) return "High pH";
+  return "pH unclear";
+}
+
+float estimatePHFromChannels(float r, float g, float b, const char* label) {
+  if (strcmp(label, "NO SIGNAL") == 0) return -1.0f;
+
+  float rbRatio = r / (b + 0.001f);
+  float estimated = 7.0f;
+
+  if (PH_HIGH_WHEN_RB_HIGH) {
+    if (rbRatio <= RB_RATIO_AT_PH7) {
+      float acidSpan = (RB_RATIO_AT_PH7 - RB_RATIO_AT_PH4);
+      if (acidSpan < 0.001f) acidSpan = 0.001f;
+      float t = (RB_RATIO_AT_PH7 - rbRatio) / acidSpan;
+      estimated = 7.0f - (t * 3.0f);
+    } else {
+      float basicSpan = (RB_RATIO_AT_PH10 - RB_RATIO_AT_PH7);
+      if (basicSpan < 0.001f) basicSpan = 0.001f;
+      float t = (rbRatio - RB_RATIO_AT_PH7) / basicSpan;
+      estimated = 7.0f + (t * 3.0f);
+    }
+  } else {
+    if (rbRatio >= RB_RATIO_AT_PH7) {
+      float acidSpan = (RB_RATIO_AT_PH10 - RB_RATIO_AT_PH7);
+      if (acidSpan < 0.001f) acidSpan = 0.001f;
+      float t = (rbRatio - RB_RATIO_AT_PH7) / acidSpan;
+      estimated = 7.0f - (t * 3.0f);
+    } else {
+      float basicSpan = (RB_RATIO_AT_PH7 - RB_RATIO_AT_PH4);
+      if (basicSpan < 0.001f) basicSpan = 0.001f;
+      float t = (RB_RATIO_AT_PH7 - rbRatio) / basicSpan;
+      estimated = 7.0f + (t * 3.0f);
+    }
+  }
+
+  float corrected = estimated;
+  if (estimated < PH_LOW_SIDE_END) {
+    corrected = PH_LOW_SIDE_END - ((PH_LOW_SIDE_END - estimated) * PH_LOW_SIDE_GAIN);
+  } else if (estimated > PH_HIGH_SIDE_START) {
+    corrected = PH_HIGH_SIDE_START + ((estimated - PH_HIGH_SIDE_START) * PH_HIGH_SIDE_GAIN);
+  }
+
+  if (strcmp(label, "Neutral pH") == 0) {
+    corrected = corrected + ((NEUTRAL_PH_TARGET - corrected) * NEUTRAL_PULL);
+  }
+
+  return corrected;
+}
+
+float phFromLabel(const char* label) {
+  if (strcmp(label, "Low pH") == 0) return 5.4f;
+  if (strcmp(label, "Neutral pH") == 0) return 7.0f;
+  if (strcmp(label, "High pH") == 0) return 7.6f;
+  return -1.0f;
+}
+
+void ensureWifi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  if ((millis() - lastWifiRetryMs) < WIFI_RETRY_INTERVAL_MS) return;
+  lastWifiRetryMs = millis();
+
+  connectWifiWithCreds(wifiSsid, wifiPass, 2500);
+}
+
+void postReading(float r, float g, float b, int outState, const char* label, float pH) {
+  ensureWifi();
+
+  String json = "{";
+  json += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  json += "\"classification\":\"" + String(label) + "\",";
+  json += "\"pH\":" + String(pH, 2) + ",";
+  json += "\"r_hz\":" + String(r, 1) + ",";
+  json += "\"g_hz\":" + String(g, 1) + ",";
+  json += "\"b_hz\":" + String(b, 1) + ",";
+  json += "\"out_state\":" + String(outState) + ",";
+  json += "\"seq\":" + String(seqNum++);
+  json += "}";
+
+  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    Serial.println("HTTP connect failed");
+    return;
+  }
+
+  client.println("POST /api/device-ingest HTTP/1.1");
+  client.print("Host: ");
+  client.println(SERVER_HOST);
+  client.println("Content-Type: application/json");
+  if (strlen(DEVICE_KEY) > 0) {
+    client.print("X-Device-Key: ");
+    client.println(DEVICE_KEY);
+  }
+  client.print("Content-Length: ");
+  client.println(json.length());
+  client.println("Connection: close");
+  client.println();
+  client.println(json);
+
+  uint32_t start = millis();
+  while (client.connected() && (millis() - start < 2000)) {
+    while (client.available()) {
+      char c = client.read();
+      Serial.write(c);
+    }
+  }
+  client.stop();
+}
+
+bool parseScanningEnabled(String responseText) {
+  responseText.toLowerCase();
+  if (responseText.indexOf("\"scanning_enabled\":false") >= 0) return false;
+  if (responseText.indexOf("\"scanning_enabled\":true") >= 0) return true;
+  return true;
+}
+
+bool fetchScanningEnabled() {
+  ensureWifi();
+  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    Serial.println("Control check failed: connect");
+    return scanningEnabled;
+  }
+
+  client.print("GET /api/device-control/");
+  client.print(DEVICE_ID);
+  client.println(" HTTP/1.1");
+  client.print("Host: ");
+  client.println(SERVER_HOST);
+  if (strlen(DEVICE_KEY) > 0) {
+    client.print("X-Device-Key: ");
+    client.println(DEVICE_KEY);
+  }
+  client.println("Connection: close");
+  client.println();
+
+  String payload = "";
+  uint32_t start = millis();
+  while (client.connected() && (millis() - start < 2000)) {
+    while (client.available()) {
+      payload += (char)client.read();
+    }
+  }
+  client.stop();
+
+  return parseScanningEnabled(payload);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(600);
+  uint32_t serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart) < 8000) {
+    delay(20);
+  }
+
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(OUT_PIN, INPUT);
+
+#if LED_PIN != -1
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+#endif
+
+  digitalWrite(S0, HIGH);
+  digitalWrite(S1, LOW);
+
+  ensureWifiSetup();
+  setupBle();
+  Serial.println("READY: BLE primary, WiFi fallback");
+}
+
+void loop() {
+#if HAS_ARDUINO_BLE
+  BLE.poll();
+#endif
+
+  bool bleActive = bleTransportActive();
+
+  if (millis() - lastControlCheckMs >= CONTROL_CHECK_INTERVAL_MS) {
+    if (bleActive) {
+      scanningEnabled = true;
+    } else {
+      scanningEnabled = fetchScanningEnabled();
+    }
+    lastControlCheckMs = millis();
+  }
+
+  if (!scanningEnabled) {
+    Serial.println("SCANNING PAUSED BY SERVER");
+    delay(LOOP_DELAY_MS);
+    return;
+  }
+
+  float r = readChannelHz(LOW, LOW);
+  float g = readChannelHz(HIGH, HIGH);
+  float b = readChannelHz(LOW, HIGH);
+  int outState = digitalRead(OUT_PIN);
+
+  const char* label = classifyPH(r, g, b);
+
+  Serial.print("t=");
+  Serial.print(millis());
+  Serial.print("  R=");
+  Serial.print(r, 1);
+  Serial.print("Hz G=");
+  Serial.print(g, 1);
+  Serial.print("Hz B=");
+  Serial.print(b, 1);
+  Serial.print("Hz  R/B=");
+  Serial.print(r / (b + 0.001f), 3);
+  Serial.print("  G/min(R,B)=");
+  float minRB = (r < b) ? r : b;
+  Serial.print(g / (minRB + 0.001f), 3);
+  Serial.print("Hz  OUTstate=");
+  Serial.print(outState);
+  Serial.print("  => ");
+  Serial.print(label);
+
+  float pH = estimatePHFromChannels(r, g, b, label);
+  Serial.print("  est_pH=");
+  Serial.println(pH, 2);
+
+  bool sentOverBle = publishBleReading(r, g, b, label, pH);
+
+  if (pH > 0.0f && !sentOverBle && (millis() - lastSendMs >= SEND_INTERVAL_MS)) {
+    postReading(r, g, b, outState, label, pH);
+    lastSendMs = millis();
+  }
+
+  delay(LOOP_DELAY_MS);
+}

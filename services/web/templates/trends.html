@@ -1,0 +1,168 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Trends — PlaqueTracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">PlaqueTracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav me-auto">
+            <li class="nav-item"><a class="nav-link" href="/">Dashboard</a></li>
+            <li class="nav-item"><a class="nav-link" href="/scans">Scans</a></li>
+            <li class="nav-item"><a class="nav-link active" href="/trends">Trends</a></li>
+            <li class="nav-item"><a class="nav-link" href="/rewards">Rewards</a></li>
+            <li class="nav-item"><a class="nav-link" href="/devices">Devices</a></li>
+            <li class="nav-item"><a class="nav-link" href="/reports">Reports</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <h2>pH Trends</h2>
+      <div class="mb-2 d-flex align-items-center gap-2">
+        <label for="densitySelect" class="form-label mb-0">Spacing:</label>
+        <select id="densitySelect" class="form-select form-select-sm" style="max-width:170px;">
+          <option value="14">Compact</option>
+          <option value="30" selected>Normal</option>
+          <option value="60">Wide</option>
+        </select>
+      </div>
+      <div id="trendWrap" class="border rounded bg-white p-2" style="height:280px;overflow-x:auto;overflow-y:scroll;">
+        <canvas id="trendChart" height="320" style="height:320px;max-height:320px;"></canvas>
+      </div>
+      <a href="/" class="btn btn-outline-primary mt-3">Back</a>
+    </div>
+
+    <script>
+      const series = {{ series | tojson | safe }};
+      const labels = series.map(s => new Date(s.t).toLocaleString());
+      const data = series.map(s => s.pH);
+      const canvas = document.getElementById('trendChart');
+      const wrap = document.getElementById('trendWrap');
+      const densitySelect = document.getElementById('densitySelect');
+      const MAX_POINTS = 20;
+
+      let pxPerPoint = 30;
+      const maxCanvasWidth = 8000;
+
+      function colorForPh(ph){
+        const value = Number(ph);
+        if(!Number.isFinite(value)) return '#4B9CD3';
+        if(value < 6.8) return '#C35BA5';
+        if(value <= 7.2) return '#4B9CD3';
+        return '#3FAE5A';
+      }
+
+      function resizeCanvasByPointCount(pointCount){
+        const viewportWidth = Math.max(900, (wrap ? wrap.clientWidth : 900));
+        const desiredWidth = Math.max(viewportWidth, pointCount * pxPerPoint);
+        const chartWidth = Math.min(maxCanvasWidth, desiredWidth);
+        canvas.style.minWidth = `${chartWidth}px`;
+        canvas.style.width = `${chartWidth}px`;
+        canvas.style.height = '320px';
+        canvas.style.maxHeight = '320px';
+        canvas.width = chartWidth;
+        canvas.height = 320;
+      }
+
+      resizeCanvasByPointCount(labels.length);
+
+      const ctx = canvas.getContext('2d');
+      if(!ctx){
+        if(wrap){
+          wrap.innerHTML = '<div class="p-3 text-muted">Could not render chart. Try refreshing the page.</div>';
+        }
+      } else {
+        const chart = new Chart(ctx, {
+        type:'line',
+        data:{
+          labels,
+          datasets:[{
+            label:'pH',
+            data,
+            borderColor:'#4B9CD3',
+            segment: {
+              borderColor: (ctx) => colorForPh(ctx.p1 && ctx.p1.parsed ? ctx.p1.parsed.y : null)
+            },
+            borderWidth: 2,
+            pointRadius: 2,
+            pointHoverRadius: 5,
+            pointHitRadius: 12,
+            pointBackgroundColor: (ctx) => colorForPh(ctx.raw),
+            pointBorderColor: (ctx) => colorForPh(ctx.raw),
+            tension:0.25
+          }]
+        },
+        options:{
+          responsive:false,
+          animation:false,
+          interaction:{
+            mode:'nearest',
+            intersect:false
+          },
+          scales:{y:{min:1,max:10}},
+          plugins:{
+            legend:{display:true},
+            tooltip:{enabled:true}
+          },
+          maintainAspectRatio:false
+        }
+      });
+
+        function appendTrendPoint(rec){
+          const pH = rec && (rec.estimated_pH ?? rec.pH);
+          if(pH === null || pH === undefined) return;
+
+          const source = (rec.source_type || '').toLowerCase();
+          if(source !== 'sensor' && source !== 'sensor_wifi') return;
+
+          const label = new Date(rec.timestamp || Date.now()).toLocaleString();
+          chart.data.labels.push(label);
+          chart.data.datasets[0].data.push(pH);
+
+          if(chart.data.labels.length > MAX_POINTS){
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+          }
+
+          resizeCanvasByPointCount(chart.data.labels.length);
+          chart.update('none');
+
+          if(wrap){
+            wrap.scrollLeft = wrap.scrollWidth;
+          }
+        }
+
+        if(typeof(EventSource) !== 'undefined'){
+          const es = new EventSource('/events');
+          es.addEventListener('scan', (e)=>{
+            try{
+              const rec = JSON.parse(e.data || '{}');
+              appendTrendPoint(rec);
+            }catch(err){
+              console.warn('trend sse parse error', err);
+            }
+          });
+        }
+
+        if(densitySelect){
+          densitySelect.addEventListener('change', ()=>{
+            const next = parseInt(densitySelect.value || '30', 10);
+            pxPerPoint = Number.isFinite(next) ? next : 30;
+            resizeCanvasByPointCount(chart.data.labels.length);
+            chart.update('none');
+          });
+        }
+      }
+    </script>
+  </body>
+</html>

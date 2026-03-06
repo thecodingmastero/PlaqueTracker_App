@@ -1,0 +1,57 @@
+:root{
+  --bg:#f7fcff;
+  --card:#ffffff;
+  --accent1:#96d4ea;
+  --accent2:#728cb8;
+  --accent3:#a074d2;
+  --muted:#6b7280;
+}
+@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;700&display=swap');
+body{
+  background: linear-gradient(180deg,#f7fcff, #eef4ff);
+  color: #0f172a;
+  font-family: 'Baloo 2', system-ui, -apple-system, 'Segoe UI', Roboto, Arial;
+  -webkit-font-smoothing:antialiased;
+  padding-bottom:40px;
+}
+.navbar-brand{font-weight:800; font-size:1.3rem; display:flex; align-items:center; gap:8px}
+.navbar-brand::before{
+  content:"";
+  width:32px;
+  height:32px;
+  border-radius:8px;
+  background-image:url('/static/PlaqueTrackerLogo.png');
+  background-size:contain;
+  background-repeat:no-repeat;
+  background-position:center;
+  display:inline-block;
+}
+.navbar{background:linear-gradient(90deg,var(--accent2),var(--accent3)) !important}
+.navbar .nav-link{color:#eef4ff !important}
+.navbar .nav-link.active{font-weight:700; text-decoration:underline; text-underline-offset:4px}
+.card{border-radius:18px; box-shadow: 0 6px 18px rgba(15,23,42,0.08);}
+.chart-container{background:var(--card); padding:18px; border-radius:14px}
+.scan-badge{background:linear-gradient(90deg,var(--accent1),var(--accent3)); color:white; padding:8px 12px; border-radius:999px; font-weight:700; display:inline-block}
+.btn-primary{background:linear-gradient(90deg,var(--accent2),var(--accent3)); border:none; box-shadow:0 6px 14px rgba(114,140,184,0.22); border-radius:12px; padding:10px 14px}
+.btn-primary:hover{transform:translateY(-2px)}
+.btn-outline-secondary{border-radius:12px}
+.profile-avatar{width:96px;height:96px;border-radius:20px;object-fit:cover; box-shadow:0 6px 18px rgba(2,6,23,0.06)}
+.recommendation-list li{margin-bottom:8px}
+.display-6{font-size:2.6rem;font-weight:800;color:var(--accent2)}
+.rewards-grid{display:flex;gap:12px;flex-wrap:wrap}
+.reward-card{flex:1 1 160px;padding:14px;border-radius:14px;background:linear-gradient(180deg,#fff,#f3f8ff);box-shadow:0 6px 18px rgba(15,23,42,0.06);text-align:center}
+.reward-card strong{display:block;margin-bottom:8px}
+.modal-thumb{max-width:180px;border-radius:12px;display:block;margin:0 auto 8px}
+
+/* playful extras */
+.emoji-title{font-size:1.2rem;margin-right:8px}
+.fun-hero{font-size:1.8rem;font-weight:800;color:#0b1220}
+.sparkle{color:#d6ebf3; margin-right:6px}
+.bounce{animation:bounce 1.2s infinite}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+
+/* small responsive tweaks */
+@media (max-width:720px){
+  .profile-avatar{width:72px;height:72px}
+  .display-6{font-size:2rem}
+}

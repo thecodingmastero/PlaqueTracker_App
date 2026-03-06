@@ -1,0 +1,60 @@
+{
+  "profile": {
+    "name": "Test User",
+    "age": 30,
+    "brushing_frequency": 2,
+    "flossing_frequency": 3,
+    "baseline_pH_min": 6.2,
+    "baseline_pH_max": 7.2
+  },
+  "scans": [
+    {
+      "timestamp": "2026-03-03T00:37:10.435738Z",
+      "source_type": "sensor_wifi",
+      "device_id": "uno-r4-wifi",
+      "pH": 7.25,
+      "estimated_pH": 7.25,
+      "classification": "High pH",
+      "r_hz": 7600.0,
+      "g_hz": 8137.5,
+      "b_hz": 9350.0,
+      "out_state": 1,
+      "seq": 145,
+      "battery": null
+    },
+    {
+      "timestamp": "2026-03-03T00:37:10.491238Z",
+      "source_type": "sensor_wifi",
+      "device_id": "uno-r4-wifi",
+      "pH": 7.25,
+      "estimated_pH": 7.25,
+      "classification": "High pH",
+      "r_hz": 7600.0,
+      "g_hz": 8125.0,
+      "b_hz": 9350.0,
+      "out_state": 0,
+      "seq": 147,
+      "battery": null
+    },
+    {
+      "timestamp": "2026-03-03T00:37:10.610027Z",
+      "source_type": "sensor_wifi",
+      "device_id": "uno-r4-wifi",
+      "pH": 7.25,
+      "estimated_pH": 7.25,
+      "classification": "High pH",
+      "r_hz": 7612.5,
+      "g_hz": 8125.0,
+      "b_hz": 9350.0,
+      "out_state": 0,
+      "seq": 150,
+      "battery": null
+    }
+  ],
+  "rewards": {
+    "xp": 2000,
+    "badges": [
+      "Starter"
+    ]
+  }
+}

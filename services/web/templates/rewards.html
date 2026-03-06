@@ -1,0 +1,350 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Rewards — PlaqueTracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+  </head>
+  <body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">PlaqueTracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav me-auto">
+            <li class="nav-item"><a class="nav-link" href="/">Dashboard</a></li>
+            <li class="nav-item"><a class="nav-link" href="/scans">Scans</a></li>
+            <li class="nav-item"><a class="nav-link" href="/trends">Trends</a></li>
+            <li class="nav-item"><a class="nav-link active" href="/rewards">Rewards</a></li>
+            <li class="nav-item"><a class="nav-link" href="/dentists">Dentists</a></li>
+            <li class="nav-item"><a class="nav-link" href="/ai-recommendations">AI Recommendations</a></li>
+            <li class="nav-item"><a class="nav-link" href="/devices">Devices</a></li>
+            <li class="nav-item"><a class="nav-link" href="/reports">Reports</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <div id="toastHost" class="position-fixed top-0 end-0 p-3" style="z-index: 1080;"></div>
+      <h2 class="fun-hero">🎁 Rewards & Goodies</h2>
+      <div class="row mb-3">
+        <div class="col-md-4">
+          <div class="card p-3">
+            <h5>XP</h5>
+            <p class="display-6">{{ rewards.xp }}</p>
+            <p class="text-muted small">Points to spend on challenges</p>
+            <p class="mt-2"><strong>Streak:</strong> <span id="streakCount">{{ streak }}</span> days 🔥</p>
+          </div>
+        </div>
+        <div class="col-md-8">
+          <div class="card p-3">
+            <h5>Badges</h5>
+            <div class="rewards-grid mt-2">
+              {% for b in rewards.badges %}
+                <div class="reward-card">
+                  <strong>{{ b }}</strong>
+                  <p class="small text-muted">{{ badge_catalog.get(b, 'Earned badge') }}</p>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-3">
+        <h5>Ways to earn XP</h5>
+        <div class="d-flex gap-2 mb-3">
+          <button id="earnScan" class="btn btn-sm btn-outline-secondary">Upload a scan (+10 XP) 📸</button>
+          <button id="dailyCheck" class="btn btn-sm btn-outline-secondary">Daily check-in (+5 XP) ☀️</button>
+          <button class="btn btn-sm btn-outline-secondary earn-btn" data-type="floss_log">Log flossing (+8 XP) 🧵</button>
+          <button class="btn btn-sm btn-outline-secondary earn-btn" data-type="hydration">Hydration goal (+6 XP) 💧</button>
+          <button class="btn btn-sm btn-outline-secondary earn-btn" data-type="challenge">Mini challenge (+15 XP) 🏆</button>
+          <button class="btn btn-sm btn-outline-secondary earn-btn" data-type="quiz">Quiz complete (+12 XP) 🧠</button>
+        </div>
+
+        <h5 class="mt-3">Available Rewards</h5>
+        <div class="row gy-2" id="availableRewards">
+          {% for key, desc in badge_catalog.items() %}
+            <div class="col-md-4">
+              <div class="p-2 border rounded">
+                <strong>{{ key }}</strong>
+                <p class="small text-muted">{{ desc }}</p>
+                <button class="btn btn-sm btn-primary claim-btn" data-badge="{{ key }}">Claim 🎉</button>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="card p-3 mt-3">
+        <h5>Marketplace (Spend XP)</h5>
+        <div class="row g-2 mb-3">
+          <div class="col-md-4">
+            <select id="marketCategory" class="form-select form-select-sm">
+              <option value="all">All categories</option>
+              <option value="Cosmetic">Cosmetic</option>
+              <option value="Boost">Boost</option>
+              <option value="Challenge">Challenge</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <select id="marketSort" class="form-select form-select-sm">
+              <option value="cost_asc">Sort: Cost low → high</option>
+              <option value="cost_desc">Sort: Cost high → low</option>
+              <option value="name_asc">Sort: Name A → Z</option>
+            </select>
+          </div>
+        </div>
+        <div class="row gy-2" id="marketplace">
+          {% for item in market_items %}
+            <div class="col-md-4 market-item" data-category="{{ item.category }}" data-cost="{{ item.cost }}" data-name="{{ item.name }}">
+              <div class="p-2 border rounded text-center">
+                <strong>{{ item.name }}</strong>
+                <div class="small text-primary">{{ item.category }}</div>
+                <p class="small text-muted">{{ item.desc }}</p>
+                <div class="mt-2"><button class="btn btn-sm btn-success purchase-btn" data-id="{{ item.id }}" data-cost="{{ item.cost }}">Buy for {{ item.cost }} XP</button></div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="card p-3 mt-3">
+        <h5>Your Purchases</h5>
+        <div id="purchasesList" class="d-flex gap-2 flex-wrap mt-2">
+          {% for p in rewards.get('purchases', []) %}
+            {% set mi = (market_items | selectattr('id','equalto', p) | list | first) %}
+            <div class="reward-card"><strong>{{ mi.name if mi else p }}</strong></div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <a href="/" class="btn btn-outline-primary mt-3">Back</a>
+    </div>
+    <script id="market-items-data" type="application/json">{{ market_items | tojson | safe }}</script>
+    <script>
+      // claim button -> AJAX redeem
+      (function(){
+        const container = document.getElementById('availableRewards');
+        container && container.addEventListener('click', async (e)=>{
+          const btn = e.target.closest('.claim-btn');
+          if(!btn) return;
+          const badge = btn.getAttribute('data-badge');
+          btn.disabled = true;
+          try{
+            const res = await fetch('/api/rewards', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'redeem', badge})});
+            const j = await res.json();
+            if(j.status === 'ok'){
+              // update XP and badges UI
+              const xpEl = document.querySelector('.display-6');
+              if(xpEl) xpEl.textContent = j.rewards.xp;
+              const grid = document.querySelector('.rewards-grid');
+              if(grid){
+                grid.innerHTML = '';
+                (j.rewards.badges || []).forEach(b =>{
+                  const div = document.createElement('div'); div.className='reward-card'; div.innerHTML = `<strong>${b}</strong><p class="small text-muted"></p>`; grid.appendChild(div);
+                });
+              }
+            } else {
+              alert('Redeem failed');
+            }
+          }catch(err){ alert('Redeem error: '+err.message); }
+          finally{ btn.disabled = false; }
+        });
+      })();
+
+      // earn XP buttons
+      (function(){
+        const earnScan = document.getElementById('earnScan');
+        const daily = document.getElementById('dailyCheck');
+        const xpEl = document.querySelector('.display-6');
+        // redirect user to scans page to actually upload a photo (upload awards XP)
+        earnScan && earnScan.addEventListener('click', ()=>{ window.location.href = '/scans'; });
+        daily && daily.addEventListener('click', async ()=>{
+          daily.disabled = true;
+          try{
+            const res = await fetch('/api/rewards',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'earn', type:'daily'})});
+            const j = await res.json();
+            if(j.status==='ok' && (!j.result || j.result.ok)){
+              if(xpEl) xpEl.textContent = j.rewards.xp;
+              if(j.streak !== undefined) document.getElementById('streakCount').textContent = j.streak;
+              showToast('Daily XP added! ☀️', 'success');
+            } else {
+              const msg = (j.result && j.result.message) ? j.result.message : 'Daily check-in not available yet';
+              showToast(msg, 'warning');
+            }
+          }catch(err){ showToast('Error: '+err.message, 'danger'); }
+          finally{ daily.disabled = false; }
+        });
+
+        document.querySelectorAll('.earn-btn').forEach(btn => {
+          btn.addEventListener('click', async ()=>{
+            const type = btn.getAttribute('data-type');
+            btn.disabled = true;
+            try{
+              const res = await fetch('/api/rewards',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'earn', type})});
+              const j = await res.json();
+              if(j.status==='ok' && (!j.result || j.result.ok)){
+                if(xpEl) xpEl.textContent = j.rewards.xp;
+                const earned = j.result && j.result.xp ? j.result.xp : 0;
+                showToast(`Earned +${earned} XP`, 'success');
+              } else {
+                const msg = (j.result && j.result.message) ? j.result.message : 'Earn failed';
+                showToast(msg, 'warning');
+              }
+            }catch(err){ showToast('Earn error: '+err.message, 'danger'); }
+            finally{ btn.disabled = false; }
+          });
+        });
+      })();
+
+      // purchase from marketplace
+      (function(){
+        const market = document.getElementById('marketplace');
+        const xpEl = document.querySelector('.display-6');
+        market && market.addEventListener('click', async (e)=>{
+          const btn = e.target.closest('.purchase-btn');
+          if(!btn) return;
+          const id = btn.getAttribute('data-id');
+          btn.disabled = true;
+          try{
+            const res = await fetch('/api/rewards',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'purchase', item_id:id})});
+            const j = await res.json();
+            if(j.status==='ok'){
+              if(xpEl) xpEl.textContent = j.rewards.xp;
+              refreshPurchases(j.rewards);
+              if(j.result && j.result.ok){
+                showToast('Purchase successful! 🎉', 'success');
+              } else {
+                const msg = (j.result && j.result.message) ? j.result.message : 'Purchase failed';
+                showToast(`Purchase failed: ${msg}`, 'danger');
+              }
+            } else showToast('Purchase failed', 'danger');
+          }catch(err){ showToast('Purchase error: '+err.message, 'danger'); }
+          finally{ btn.disabled = false; }
+        });
+      })();
+
+      // prepare market map for id -> name
+      const MARKET_MAP = {};
+      const MARKET_ITEMS = JSON.parse(document.getElementById('market-items-data').textContent || '[]');
+      (MARKET_ITEMS || []).forEach(mi => { MARKET_MAP[mi.id] = mi.name; });
+
+      // update purchases list when rewards change
+      function refreshPurchases(rewards){
+        const list = document.getElementById('purchasesList');
+        if(!list) return;
+        list.innerHTML = '';
+        (rewards.purchases || []).forEach(p =>{
+          const name = MARKET_MAP[p] || p;
+          const div = document.createElement('div'); div.className='reward-card'; div.innerHTML = `<strong>${name}</strong>`; list.appendChild(div);
+        });
+        updateOwnedButtons(rewards);
+      }
+
+      function updateOwnedButtons(rewards){
+        const owned = new Set(rewards.purchases || []);
+        document.querySelectorAll('.purchase-btn').forEach(btn => {
+          const id = btn.getAttribute('data-id');
+          if(owned.has(id)){
+            btn.disabled = true;
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-outline-secondary');
+            btn.textContent = 'Owned ✅';
+          }
+        });
+      }
+
+      function applyMarketFilters(){
+        const cat = (document.getElementById('marketCategory')?.value || 'all').toLowerCase();
+        const sort = document.getElementById('marketSort')?.value || 'cost_asc';
+        const market = document.getElementById('marketplace');
+        if(!market) return;
+        const items = Array.from(market.querySelectorAll('.market-item'));
+
+        items.forEach(el => {
+          const itemCat = (el.getAttribute('data-category') || '').toLowerCase();
+          el.style.display = (cat === 'all' || itemCat === cat) ? '' : 'none';
+        });
+
+        const visible = items.filter(el => el.style.display !== 'none');
+        visible.sort((a,b)=>{
+          const aCost = Number(a.getAttribute('data-cost') || 0);
+          const bCost = Number(b.getAttribute('data-cost') || 0);
+          const aName = (a.getAttribute('data-name') || '').toLowerCase();
+          const bName = (b.getAttribute('data-name') || '').toLowerCase();
+          if(sort === 'cost_desc') return bCost - aCost;
+          if(sort === 'name_asc') return aName.localeCompare(bName);
+          return aCost - bCost;
+        });
+        visible.forEach(el => market.appendChild(el));
+      }
+
+      function showToast(message, type){
+        const host = document.getElementById('toastHost');
+        if(!host) return;
+        const el = document.createElement('div');
+        el.className = `toast align-items-center text-bg-${type || 'primary'} border-0 mb-2`;
+        el.setAttribute('role', 'alert');
+        el.setAttribute('aria-live', 'assertive');
+        el.setAttribute('aria-atomic', 'true');
+        el.innerHTML = `<div class="d-flex"><div class="toast-body">${message}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button></div>`;
+        host.appendChild(el);
+        const toast = new bootstrap.Toast(el, {delay: 2500});
+        toast.show();
+        el.addEventListener('hidden.bs.toast', ()=> el.remove());
+      }
+
+      // hydrate purchases/xp from API on first load to ensure latest bought items show up
+      (async function initRewardsState(){
+        try{
+          const res = await fetch('/api/rewards');
+          const j = await res.json();
+          if(j.status === 'ok'){
+            const xpEl = document.querySelector('.display-6');
+            if(xpEl && j.rewards) xpEl.textContent = j.rewards.xp;
+            refreshPurchases(j.rewards || {});
+            applyMarketFilters();
+          }
+        }catch(err){ console.error('init rewards', err); }
+      })();
+
+      document.getElementById('marketCategory')?.addEventListener('change', applyMarketFilters);
+      document.getElementById('marketSort')?.addEventListener('change', applyMarketFilters);
+
+      // wire SSE rewards updates to purchases
+      if(typeof(EventSource) !== 'undefined'){
+        const es = new EventSource('/events');
+        es.addEventListener('rewards', (e)=>{
+          try{
+            const r = JSON.parse(e.data);
+            const xpEl = document.querySelector('.display-6');
+            if(xpEl) xpEl.textContent = r.xp;
+            refreshPurchases(r);
+          }catch(err){console.error('rewards sse', err)}
+        });
+      }
+
+      // live rewards updates
+      if(typeof(EventSource) !== 'undefined'){
+        const es = new EventSource('/events');
+        es.addEventListener('rewards', (e)=>{
+          try{
+            const r = JSON.parse(e.data);
+            const xpEl = document.querySelector('.display-6');
+            if(xpEl) xpEl.textContent = r.xp;
+            const grid = document.querySelector('.rewards-grid');
+            if(grid){
+              grid.innerHTML = '';
+              (r.badges || []).forEach(b =>{
+                const div = document.createElement('div'); div.className='reward-card'; div.innerHTML = `<strong>${b}</strong><p class="small text-muted"></p>`; grid.appendChild(div);
+              });
+            }
+          }catch(err){console.error('rewards sse', err)}
+        });
+      }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>

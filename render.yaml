@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: plaquetracker-web
+    runtime: python
+    plan: free
+    autoDeploy: true
+    buildCommand: pip install -r services/web/requirements.txt
+    startCommand: python services/web/app.py
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: arcee-ai/trinity-large-preview:free
+      - key: OPENROUTER_TIMEOUT_SEC
+        value: "20"
+      - key: DEVICE_INGEST_KEY
+        sync: false

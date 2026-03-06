@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Profile — PlaqueTracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+  </head>
+  <body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">PlaqueTracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav me-auto">
+            <li class="nav-item"><a class="nav-link" href="/">Dashboard</a></li>
+            <li class="nav-item"><a class="nav-link" href="/scans">Scans</a></li>
+            <li class="nav-item"><a class="nav-link" href="/trends">Trends</a></li>
+            <li class="nav-item"><a class="nav-link" href="/rewards">Rewards</a></li>
+            <li class="nav-item"><a class="nav-link" href="/devices">Devices</a></li>
+            <li class="nav-item"><a class="nav-link" href="/reports">Reports</a></li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container py-4">
+      <h2 class="fun-hero">😊 Edit Profile</h2>
+      <div class="card p-3">
+        <form id="profileForm" method="post" action="/profile" class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Name</label>
+            <input name="name" class="form-control" value="{{ profile.name }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Age</label>
+            <input name="age" type="number" class="form-control" value="{{ profile.age }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Brushing/day</label>
+            <input name="brushing_frequency" type="number" class="form-control" value="{{ profile.brushing_frequency }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Flossing/week</label>
+            <input name="flossing_frequency" type="number" class="form-control" value="{{ profile.flossing_frequency }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Baseline pH min</label>
+            <input name="baseline_pH_min" type="number" step="0.1" class="form-control" value="{{ profile.baseline_pH_min }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Baseline pH max</label>
+            <input name="baseline_pH_max" type="number" step="0.1" class="form-control" value="{{ profile.baseline_pH_max }}">
+          </div>
+          <div class="col-12">
+            <button id="saveProfileBtn" class="btn btn-primary">Save Profile 🎉</button>
+            <a href="/" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+    <script>
+      // AJAX submit for profile form
+      (function(){
+        const form = document.getElementById('profileForm');
+        const btn = document.getElementById('saveProfileBtn');
+        if(form){
+          form.addEventListener('submit', async (e)=>{
+            e.preventDefault();
+            btn.disabled = true;
+            const data = {};
+            new FormData(form).forEach((v,k)=>{ data[k]=v; });
+            // convert numeric fields
+            ['age','brushing_frequency','flossing_frequency','baseline_pH_min','baseline_pH_max'].forEach(k=>{ if(data[k]!==undefined && data[k]!=='') data[k]=Number(data[k]); });
+            try{
+              const res = await fetch('/api/profile',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+              const j = await res.json();
+              if(j.status==='ok'){
+                // notify and let SSE update other clients
+                alert('Profile saved');
+              } else {
+                alert('Save failed: '+(j.message||'unknown'));
+              }
+            }catch(err){ alert('Save error: '+err.message); }
+            finally{ btn.disabled = false; }
+          });
+        }
+      })();
+      if(typeof(EventSource) !== 'undefined'){
+        const es = new EventSource('/events');
+        es.addEventListener('profile', (e)=>{
+          try{
+            const p = JSON.parse(e.data);
+            // update form fields if present
+            const set = (name, val)=>{ const el = document.querySelector(`[name="${name}"]`); if(el) el.value = val; };
+            set('name', p.name || ''); set('age', p.age || ''); set('brushing_frequency', p.brushing_frequency || ''); set('flossing_frequency', p.flossing_frequency || ''); set('baseline_pH_min', p.baseline_pH_min || ''); set('baseline_pH_max', p.baseline_pH_max || '');
+          }catch(err){console.error('profile sse', err)}
+        });
+      }
+    </script>
+  </body>
+</html>
