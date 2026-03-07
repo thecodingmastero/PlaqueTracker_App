@@ -55,3 +55,13 @@ body{
   .profile-avatar{width:72px;height:72px}
   .display-6{font-size:2rem}
 }
+
+@media (max-width:991.98px){
+  .navbar .navbar-collapse.show{
+    margin-top:10px;
+  }
+
+  .navbar .nav-link{
+    padding:6px 8px;
+  }
+}
