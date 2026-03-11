@@ -92,8 +92,6 @@
     </div>
     <script>
       (function(){
-        if (typeof(EventSource) === 'undefined') return;
-
         const latestPhEl = document.getElementById('latestPh');
         const latestTsEl = document.getElementById('latestTs');
         const latestEmptyEl = document.getElementById('latestEmpty');
@@ -113,15 +111,32 @@
           if (latestEmptyEl) latestEmptyEl.classList.add('d-none');
         }
 
-        const es = new EventSource('/events');
-        es.addEventListener('scan', (e)=>{
+        async function refreshLatestFromApi(){
           try {
-            const rec = JSON.parse(e.data || '{}');
-            renderLatest(rec);
+            const response = await fetch('/api/latest-scan', { cache: 'no-store' });
+            const payload = await response.json();
+            if (payload && payload.status === 'ok') {
+              renderLatest(payload.latest);
+            }
           } catch (err) {
-            console.warn('dashboard scan sse parse error', err);
+            console.warn('dashboard latest-scan poll error', err);
           }
-        });
+        }
+
+        refreshLatestFromApi();
+        setInterval(refreshLatestFromApi, 5000);
+
+        if (typeof(EventSource) !== 'undefined') {
+          const es = new EventSource('/events');
+          es.addEventListener('scan', (e)=>{
+            try {
+              const rec = JSON.parse(e.data || '{}');
+              renderLatest(rec);
+            } catch (err) {
+              console.warn('dashboard scan sse parse error', err);
+            }
+          });
+        }
       })();
     </script>
     <script src="{{ url_for('static', filename='mobile-nav.js') }}"></script>

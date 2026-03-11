@@ -911,6 +911,14 @@ def api_dentists():
     return jsonify({'status': 'ok', 'dentists': dentists, 'city': city, 'state': state, 'country': country, 'zip': zip_code, 'lat': lat, 'lon': lon, 'google_maps_url': maps_url})
 
 
+@app.route('/api/latest-scan', methods=['GET'])
+def api_latest_scan():
+    data = load_data()
+    sensor_scans = get_sensor_scans(data.get('scans', []))
+    latest = sensor_scans[-1] if sensor_scans else None
+    return jsonify({'status': 'ok', 'latest': latest})
+
+
 @app.route('/api/recommendations', methods=['GET'])
 def api_recommendations():
     """Return AI-generated suggestions and a small list of local dentist recommendations.
