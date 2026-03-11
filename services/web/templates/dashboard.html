@@ -41,12 +41,16 @@
           <div class="card mb-3">
             <div class="card-body">
               <h5 class="card-title">Latest Scan 🛰️</h5>
+              <div id="latestScanCard">
               {% if latest %}
-                <p class="h3 fun-hero">pH {{ latest.estimated_pH or latest.pH }} <span class="bounce">🌈</span></p>
-                <p class="text-muted">{{ latest.timestamp }}</p>
+                <p id="latestPh" class="h3 fun-hero">pH {{ latest.estimated_pH or latest.pH }} <span class="bounce">🌈</span></p>
+                <p id="latestTs" class="text-muted">{{ latest.timestamp }}</p>
               {% else %}
-                <p class="text-muted">No scans yet — try uploading a photo! 📸</p>
+                <p id="latestPh" class="h3 fun-hero d-none"></p>
+                <p id="latestTs" class="text-muted d-none"></p>
+                <p id="latestEmpty" class="text-muted">No scans yet — try uploading a photo! 📸</p>
               {% endif %}
+              </div>
             </div>
           </div>
 
@@ -86,6 +90,40 @@
         </div>
       </div>
     </div>
+    <script>
+      (function(){
+        if (typeof(EventSource) === 'undefined') return;
+
+        const latestPhEl = document.getElementById('latestPh');
+        const latestTsEl = document.getElementById('latestTs');
+        const latestEmptyEl = document.getElementById('latestEmpty');
+
+        function renderLatest(rec){
+          if (!rec) return;
+          const source = (rec.source_type || '').toLowerCase();
+          if (source !== 'sensor' && source !== 'sensor_wifi') return;
+
+          const pH = rec.estimated_pH ?? rec.pH;
+          if (pH === null || pH === undefined) return;
+
+          latestPhEl.textContent = `pH ${Number(pH).toFixed(2)}`;
+          latestPhEl.classList.remove('d-none');
+          latestTsEl.textContent = rec.timestamp || new Date().toISOString();
+          latestTsEl.classList.remove('d-none');
+          if (latestEmptyEl) latestEmptyEl.classList.add('d-none');
+        }
+
+        const es = new EventSource('/events');
+        es.addEventListener('scan', (e)=>{
+          try {
+            const rec = JSON.parse(e.data || '{}');
+            renderLatest(rec);
+          } catch (err) {
+            console.warn('dashboard scan sse parse error', err);
+          }
+        });
+      })();
+    </script>
     <script src="{{ url_for('static', filename='mobile-nav.js') }}"></script>
     <!-- Overview page: no inline charts here (scans/trends page holds charts) -->
   </body>

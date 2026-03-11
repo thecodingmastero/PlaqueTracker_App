@@ -4,8 +4,8 @@
 
   Set:
     WIFI_SSID / WIFI_PASS
-    SERVER_HOST (your computer LAN IP)
-    SERVER_PORT (usually 8000)
+    SERVER_HOST (Render app domain, no https://)
+    SERVER_PORT (443 for HTTPS)
     DEVICE_KEY (optional; must match DEVICE_INGEST_KEY env var on server)
 */
 
@@ -13,9 +13,16 @@
 #include <string.h>
 #include <stdio.h>
 
-#if __has_include(<ArduinoBLE.h>)
+// BLE detection: enable only when ArduinoBLE is present AND exposes BLE symbols.
+// This avoids compile failures on board/core combinations where ArduinoBLE is
+// installed but BLE APIs are not available.
+#if defined(__has_include) && __has_include(<ArduinoBLE.h>)
 #include <ArduinoBLE.h>
+#if defined(BLERead) && defined(BLENotify)
 #define HAS_ARDUINO_BLE 1
+#else
+#define HAS_ARDUINO_BLE 0
+#endif
 #else
 #define HAS_ARDUINO_BLE 0
 #endif
@@ -29,8 +36,8 @@
 
 const char DEFAULT_WIFI_SSID[] = "ORBI83";
 const char DEFAULT_WIFI_PASS[] = "sweetbolt655";
-const char SERVER_HOST[] = "192.168.1.79";
-const int SERVER_PORT = 8000;
+const char SERVER_HOST[] = "plaquetracker-web.onrender.com";
+const int SERVER_PORT = 443;
 const char DEVICE_ID[] = "uno-r4-wifi";
 const char DEVICE_KEY[] = "";
 
@@ -59,7 +66,7 @@ const float PH_HIGH_SIDE_GAIN = 0.42f;
 const float NEUTRAL_PH_TARGET = 7.0f;
 const float NEUTRAL_PULL = 0.85f;
 
-WiFiClient client;
+WiFiSSLClient client;
 uint32_t seqNum = 0;
 uint32_t lastSendMs = 0;
 uint32_t lastControlCheckMs = 0;
@@ -100,56 +107,82 @@ String readSerialLine(uint32_t timeoutMs = 30000, uint32_t idleCompleteMs = 900)
       char c = (char)Serial.read();
       lastRx = millis();
       if (c == '\n' || c == '\r') {
-        trimLine(line);
         return line;
       }
       line += c;
     }
 
     if (line.length() > 0 && lastRx > 0 && (millis() - lastRx) >= idleCompleteMs) {
-      trimLine(line);
       return line;
     }
 
     delay(10);
   }
 
-  trimLine(line);
   return line;
 }
 
 bool connectWifiWithCreds(const char* ssid, const char* pass, uint32_t timeoutMs) {
   if (ssid == nullptr || strlen(ssid) == 0) return false;
 
-  WiFi.disconnect();
-  delay(150);
-
   Serial.print("Connecting to SSID: ");
   Serial.println(ssid);
-  WiFi.begin(ssid, pass);
+  bool hasPassword = (pass != nullptr && strlen(pass) > 0);
 
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
+  for (int attempt = 0; attempt < 2; attempt++) {
+    bool useOpenAuth = hasPassword ? (attempt == 1) : (attempt == 0);
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("WiFi connected. IP=");
-    Serial.println(WiFi.localIP());
-    return true;
+    WiFi.disconnect();
+    delay(250);
+
+    if (useOpenAuth) {
+      Serial.println("Using open network auth (no password)");
+      WiFi.begin(ssid);
+    } else {
+      Serial.println("Using secured network auth (password)");
+      WiFi.begin(ssid, pass);
+    }
+
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("WiFi connected. IP=");
+      Serial.println(WiFi.localIP());
+      return true;
+    }
+
+    if (attempt == 0) {
+      Serial.println("First auth mode failed, trying alternate mode...");
+    }
   }
+
+  const char* statusText = "UNKNOWN";
+  int status = (int)WiFi.status();
+  if (status == WL_IDLE_STATUS) statusText = "IDLE";
+  else if (status == WL_NO_SSID_AVAIL) statusText = "NO_SSID_AVAIL";
+  else if (status == WL_SCAN_COMPLETED) statusText = "SCAN_COMPLETED";
+  else if (status == WL_CONNECTED) statusText = "CONNECTED";
+  else if (status == WL_CONNECT_FAILED) statusText = "CONNECT_FAILED";
+  else if (status == WL_CONNECTION_LOST) statusText = "CONNECTION_LOST";
+  else if (status == WL_DISCONNECTED) statusText = "DISCONNECTED";
 
   Serial.print("WiFi connect failed. status=");
-  Serial.println((int)WiFi.status());
+  Serial.print(status);
+  Serial.print(" (");
+  Serial.print(statusText);
+  Serial.println(")");
   return false;
 }
 
 void setupBle() {
 #if HAS_ARDUINO_BLE
   if (!BLE.begin()) {
-    Serial.println("BLE init failed");
+    Serial.println("BLE init failed (check core/firmware and reboot board)");
     return;
   }
 
@@ -167,7 +200,7 @@ void setupBle() {
   BLE.advertise();
   Serial.println("BLE advertising: PlaqueTracker");
 #else
-  Serial.println("ArduinoBLE not installed: BLE disabled (WiFi still active)");
+  Serial.println("BLE unavailable on this board/core build: WiFi fallback active");
 #endif
 }
 
@@ -218,13 +251,29 @@ void printWifiScan() {
   }
 }
 
+void useDefaultWifiCredentials() {
+  strncpy(wifiSsid, DEFAULT_WIFI_SSID, sizeof(wifiSsid) - 1);
+  wifiSsid[sizeof(wifiSsid) - 1] = '\0';
+  strncpy(wifiPass, DEFAULT_WIFI_PASS, sizeof(wifiPass) - 1);
+  wifiPass[sizeof(wifiPass) - 1] = '\0';
+}
+
 void promptForWifiCredentials() {
-  Serial.println("Enter WiFi SSID and press Send (or type 'scan' to list networks):");
+  Serial.println("Enter WiFi SSID and press Send (or type 'scan' to list networks).");
+  if (strlen(DEFAULT_WIFI_SSID) > 0) {
+    Serial.println("Type a single space as SSID to use default WiFi.");
+  }
   String ssidIn = readSerialLine(45000, 900);
+  if (ssidIn.length() == 1 && ssidIn[0] == ' ' && strlen(DEFAULT_WIFI_SSID) > 0) {
+    Serial.print("Using default WiFi: ");
+    Serial.println(DEFAULT_WIFI_SSID);
+    useDefaultWifiCredentials();
+    return;
+  }
   trimLine(ssidIn);
 
   if (ssidIn.length() == 0) {
-    Serial.println("No SSID entered (timeout). Will ask again.");
+    Serial.println("No SSID entered.");
     return;
   }
 
@@ -243,8 +292,13 @@ void promptForWifiCredentials() {
 
   Serial.print("Enter WiFi password for ");
   Serial.print(chosenSsid);
-  Serial.println(" (leave blank for open network), then press Send:");
+  Serial.println(" (leave blank for open network), then press Send.");
+  Serial.println("Type a single space as password for open network.");
   String passIn = readSerialLine(45000, 900);
+  if (passIn.length() == 1 && passIn[0] == ' ') {
+    passIn = "";
+    Serial.println("Using open network (no password).");
+  }
   trimLine(passIn);
 
   chosenSsid.toCharArray(wifiSsid, sizeof(wifiSsid));
@@ -252,40 +306,38 @@ void promptForWifiCredentials() {
 }
 
 void ensureWifiSetup() {
-  if (strlen(DEFAULT_WIFI_SSID) > 0) {
-    strncpy(wifiSsid, DEFAULT_WIFI_SSID, sizeof(wifiSsid) - 1);
-    wifiSsid[sizeof(wifiSsid) - 1] = '\0';
-    strncpy(wifiPass, DEFAULT_WIFI_PASS, sizeof(wifiPass) - 1);
-    wifiPass[sizeof(wifiPass) - 1] = '\0';
-    return;
-  }
-
   Serial.println();
   Serial.println("=== WiFi setup required ===");
   Serial.println("Open Serial Monitor at 115200 baud.");
   Serial.println("Tip: set line ending to 'No line ending' OR 'Newline' and press Send.");
 
-  if (strlen(DEFAULT_WIFI_SSID) > 0) {
-    Serial.print("Trying default WiFi first: ");
-    Serial.println(DEFAULT_WIFI_SSID);
-    strncpy(wifiSsid, DEFAULT_WIFI_SSID, sizeof(wifiSsid) - 1);
-    wifiSsid[sizeof(wifiSsid) - 1] = '\0';
-    strncpy(wifiPass, DEFAULT_WIFI_PASS, sizeof(wifiPass) - 1);
-    wifiPass[sizeof(wifiPass) - 1] = '\0';
+  while (true) {
+    promptForWifiCredentials();
+
+    if (strlen(wifiSsid) == 0) {
+      if (strlen(DEFAULT_WIFI_SSID) > 0) {
+        Serial.print("No SSID entered. Trying default WiFi: ");
+        Serial.println(DEFAULT_WIFI_SSID);
+        useDefaultWifiCredentials();
+      } else {
+        Serial.println("Still no valid SSID received. Retrying prompt...");
+        delay(1200);
+        continue;
+      }
+    }
+
     if (connectWifiWithCreds(wifiSsid, wifiPass, 12000)) {
       return;
     }
-    Serial.println("Default WiFi failed. Falling back to manual entry.");
+
+    Serial.println("WiFi credentials/network failed. Please enter another SSID/password.");
     wifiSsid[0] = '\0';
     wifiPass[0] = '\0';
-  }
-
-  while (strlen(wifiSsid) == 0) {
-    promptForWifiCredentials();
-    if (strlen(wifiSsid) == 0) {
-      Serial.println("Still no valid SSID received. Retrying prompt...");
-      delay(1200);
+    if (strlen(DEFAULT_WIFI_SSID) > 0) {
+      Serial.println("Tip: type a single space as SSID to use default WiFi.");
     }
+
+      delay(1200);
   }
 }
 
