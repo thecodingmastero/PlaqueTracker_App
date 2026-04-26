@@ -2,6 +2,7 @@ from flask import Flask, render_template, render_template_string, request, redir
 import requests
 import json
 import os
+import base64
 from datetime import datetime
 import time
 from urllib.parse import quote
@@ -30,6 +31,18 @@ OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'arcee-ai/trinity-large-pr
 OPENROUTER_URL = os.environ.get('OPENROUTER_URL', 'https://openrouter.ai/api/v1/chat/completions')
 OPENROUTER_TIMEOUT_SEC = int(os.environ.get('OPENROUTER_TIMEOUT_SEC', '20'))
 DEVICE_INGEST_KEY = os.environ.get('DEVICE_INGEST_KEY')
+
+# AI vision config for hydrogel scan analysis (Option B).
+# OPENAI_API_KEY is checked first; falls back to OPENROUTER_API_KEY so existing
+# Render deployments that already have OPENROUTER_API_KEY set work automatically.
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') or OPENROUTER_API_KEY
+# Default model must be vision-capable. openai/gpt-4o-mini is available on
+# OpenRouter and supports image inputs.  Override with OPENAI_MODEL env var.
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'openai/gpt-4o-mini')
+# Default base URL points at OpenRouter (OpenAI-compatible).
+# Set OPENAI_BASE_URL=https://api.openai.com/v1/chat/completions to use OpenAI directly.
+OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL', OPENROUTER_URL)
+OPENAI_TIMEOUT_SEC = int(os.environ.get('OPENAI_TIMEOUT_SEC', '30'))
 
 _DENTIST_CACHE = {}
 _DENTIST_CACHE_TTL_SEC = 300
@@ -126,6 +139,164 @@ def build_plaque_location_feedback(hydrogel_result):
     }
 
 
+def analyze_hydrogel_with_ai(image_path):
+    """Send hydrogel image to an AI vision model and return structured analysis.
+
+    Returns a dict with keys:
+        estimated_pH, confidence, summary, zones, actions, ai_source, ai_error
+
+    Raises ValueError on configuration error.
+    Raises RuntimeError on API / parsing failure (caller should surface ai_error).
+    """
+    if not OPENAI_API_KEY:
+        raise ValueError('No AI API key configured (set OPENAI_API_KEY or OPENROUTER_API_KEY)')
+
+    # Read and base64-encode the image
+    with open(image_path, 'rb') as img_f:
+        img_data = img_f.read()
+    ext = os.path.splitext(image_path)[1].lower()
+    mime_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                '.gif': 'image/gif', '.webp': 'image/webp'}
+    mime_type = mime_map.get(ext, 'image/jpeg')
+    img_b64 = base64.b64encode(img_data).decode('utf-8')
+    data_url = f'data:{mime_type};base64,{img_b64}'
+
+    system_msg = (
+        "You are a dental AI assistant that analyzes hydrogel plaque indicator images. "
+        "You MUST output ONLY valid JSON. "
+        "Do NOT include explanations, markdown, code blocks, or extra text. "
+        "The response MUST start with '{' and end with '}'. "
+        "Return exactly this JSON schema (all fields required):\n"
+        '{"estimated_pH": <number 3.5-8.5>, '
+        '"confidence": <number 0.0-1.0>, '
+        '"summary": "<1-2 sentence plaque concentration summary>", '
+        '"zones": [{"name": "<zone>", "level": "<High|Moderate|Low>", "score": <integer 0-100>}], '
+        '"actions": ["<recommendation>"]}\n'
+        "zones must contain exactly 4 entries for these zones in order: "
+        "Upper Front, Left Gumline, Right Molars, Lower Front. "
+        "actions must contain 2-4 actionable brushing/flossing recommendations. "
+        "Base estimated_pH on visible hydrogel colour "
+        "(yellow/orange = acidic ~5.5-6.2, green = neutral ~6.8-7.2, blue/purple = alkaline ~7.5-8.0). "
+        "If the image is not a hydrogel indicator, still return valid JSON with low confidence."
+    )
+
+    body = {
+        'model': OPENAI_MODEL,
+        'messages': [
+            {'role': 'system', 'content': system_msg},
+            {'role': 'user', 'content': [
+                {'type': 'image_url', 'image_url': {'url': data_url, 'detail': 'low'}},
+                {'type': 'text', 'text': 'Analyze this hydrogel plaque indicator image and return the JSON result.'}
+            ]}
+        ],
+        'temperature': 0.0,
+        'max_tokens': 400
+    }
+
+    headers = {
+        'Authorization': f'Bearer {OPENAI_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    site_url = os.environ.get('OPENROUTER_SITE_URL')
+    site_name = os.environ.get('OPENROUTER_SITE_NAME')
+    if site_url:
+        headers['HTTP-Referer'] = site_url
+    if site_name:
+        headers['X-Title'] = site_name
+
+    try:
+        resp = requests.post(OPENAI_BASE_URL, headers=headers, json=body, timeout=OPENAI_TIMEOUT_SEC)
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f'AI API request timed out after {OPENAI_TIMEOUT_SEC}s')
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f'AI API network error: {exc}')
+
+    if resp.status_code >= 400:
+        msg = ''
+        try:
+            err = resp.json()
+            if isinstance(err, dict):
+                msg = ((err.get('error') or {}).get('message') if isinstance(err.get('error'), dict) else '') or ''
+        except Exception:
+            pass
+        raise RuntimeError(f'AI API HTTP {resp.status_code}' + (f': {msg}' if msg else ''))
+
+    try:
+        raw = resp.json()
+    except Exception:
+        raise RuntimeError('AI API returned non-JSON HTTP response')
+
+    content = (raw.get('choices') or [{}])[0].get('message', {}).get('content', '')
+    if not content:
+        raise RuntimeError('AI API returned empty response content')
+
+    parsed = _parse_json_from_text(content)
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f'AI response could not be parsed as JSON: {content[:200]}')
+
+    # Validate and normalise estimated_pH
+    try:
+        ph = float(parsed.get('estimated_pH', 6.5))
+        ph = max(3.5, min(8.5, ph))
+    except Exception:
+        ph = 6.5
+
+    # Validate confidence
+    try:
+        conf = float(parsed.get('confidence', 0.5))
+        conf = max(0.0, min(1.0, conf))
+    except Exception:
+        conf = 0.5
+
+    summary = str(parsed.get('summary') or 'AI hydrogel analysis complete.')
+
+    # Validate zones
+    expected_zone_names = ['Upper Front', 'Left Gumline', 'Right Molars', 'Lower Front']
+    zones = []
+    raw_zones = parsed.get('zones') or []
+    if isinstance(raw_zones, list):
+        for z in raw_zones[:4]:
+            if isinstance(z, dict):
+                name = str(z.get('name') or 'Unknown')
+                level = str(z.get('level') or 'Moderate')
+                if level not in ('High', 'Moderate', 'Low'):
+                    level = 'Moderate'
+                try:
+                    score = int(round(float(z.get('score', 50))))
+                    score = max(0, min(100, score))
+                except Exception:
+                    score = 50
+                zones.append({'name': name, 'level': level, 'score': score})
+    # Pad missing zones with defaults derived from estimated pH
+    if len(zones) < 4:
+        base_score = max(0, min(100, int(round(52 + (6.8 - ph) * 22))))
+        for name in expected_zone_names[len(zones):]:
+            zones.append({'name': name, 'level': 'Moderate', 'score': base_score})
+
+    # Validate actions
+    raw_actions = parsed.get('actions') or []
+    if isinstance(raw_actions, list):
+        actions = [str(a) for a in raw_actions if a][:6]
+    else:
+        actions = []
+    if not actions:
+        actions = [
+            'Focus brushing on plaque-concentrated zones for 20-30 seconds.',
+            'Use angled brushing technique near the gumline.',
+            'Retake a hydrogel scan after your next cleaning to compare.'
+        ]
+
+    return {
+        'estimated_pH': round(ph, 2),
+        'confidence': round(conf, 3),
+        'summary': summary,
+        'zones': zones,
+        'actions': actions,
+        'ai_source': OPENAI_MODEL,
+        'ai_error': None
+    }
+
+
 def process_hydrogel_upload_file(f):
     filename = secure_filename(getattr(f, 'filename', 'upload'))
     os.makedirs(UPLOADS_DIR, exist_ok=True)
@@ -136,11 +307,23 @@ def process_hydrogel_upload_file(f):
         with open(path, 'wb') as out_f:
             out_f.write(f.read())
 
+    # --- Option B: AI vision analysis (primary path) ---
+    ai_result = None
+    ai_error = None
+    if OPENAI_API_KEY:
+        try:
+            ai_result = analyze_hydrogel_with_ai(path)
+        except Exception as exc:
+            ai_error = str(exc)
+    else:
+        ai_error = 'No AI API key configured (set OPENAI_API_KEY or OPENROUTER_API_KEY)'
+
+    # --- CV model scan (used for metadata and as fallback pH/confidence) ---
     model_path = MODEL_PATH if os.path.exists(MODEL_PATH) else 'model.pkl'
     try:
-        result = hydrogel_scan.run(path, model_path)
+        cv_result = hydrogel_scan.run(path, model_path)
     except Exception as e:
-        result = {
+        cv_result = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'source_type': 'hydrogel_image',
             'estimated_pH': 6.5,
@@ -149,16 +332,34 @@ def process_hydrogel_upload_file(f):
             'processing_metadata': {'mean_rgb': [128, 128, 128]}
         }
 
-    plaque_ai = build_plaque_location_feedback(result)
+    if ai_result is not None:
+        plaque_ai = {
+            'ai_source': ai_result['ai_source'],
+            'summary': ai_result['summary'],
+            'zones': ai_result['zones'],
+            'actions': ai_result['actions']
+        }
+        estimated_pH = ai_result['estimated_pH']
+        confidence = ai_result['confidence']
+        ai_error = None
+    else:
+        # Heuristic fallback — explicitly marks source and error
+        plaque_ai = build_plaque_location_feedback(cv_result)
+        plaque_ai['ai_source'] = 'heuristic'
+        estimated_pH = cv_result.get('estimated_pH', 6.5)
+        confidence = cv_result.get('confidence', 0.3)
 
     record = {
-        'timestamp': result.get('timestamp') or (datetime.utcnow().isoformat() + 'Z'),
+        'timestamp': cv_result.get('timestamp') or (datetime.utcnow().isoformat() + 'Z'),
         'source_type': 'hydrogel_image',
         'device_id': 'uploaded-hydrogel-image',
         'pH': None,
-        'estimated_pH': result.get('estimated_pH'),
+        'estimated_pH': estimated_pH,
+        'confidence': confidence,
         'plaque_ai': plaque_ai,
-        'ingest_response': result
+        'ai_source': plaque_ai.get('ai_source'),
+        'ai_error': ai_error,
+        'ingest_response': cv_result
     }
     add_scan_record(record)
     return record

@@ -47,6 +47,8 @@
       <div class="card mb-3" id="latestResultCard" style="display:none;">
         <div class="card-body">
           <h5 class="card-title">Latest AI Plaque Feedback</h5>
+          <div id="latestAiMeta" class="mb-2 small text-muted"></div>
+          <div id="latestAiError" class="alert alert-warning py-1 px-2 mb-2" style="display:none;"></div>
           <p id="latestSummary" class="mb-2"></p>
           <div id="latestZones" class="row g-2"></div>
           <ul id="latestActions" class="mt-3 mb-0"></ul>
@@ -79,6 +81,8 @@
       const previewImg = document.getElementById('previewImg');
 
       const latestCard = document.getElementById('latestResultCard');
+      const latestAiMeta = document.getElementById('latestAiMeta');
+      const latestAiError = document.getElementById('latestAiError');
       const latestSummary = document.getElementById('latestSummary');
       const latestZones = document.getElementById('latestZones');
       const latestActions = document.getElementById('latestActions');
@@ -87,6 +91,22 @@
       function renderPlaqueResult(record){
         const plaque = record.plaque_ai || {};
         latestCard.style.display = 'block';
+
+        // AI source badge
+        const src = record.ai_source || plaque.ai_source || 'heuristic';
+        const isHeuristic = (src === 'heuristic');
+        latestAiMeta.innerHTML = isHeuristic
+          ? '<span class="badge bg-secondary">Source: heuristic (no AI)</span>'
+          : `<span class="badge bg-success">Source: AI — ${src}</span>`;
+
+        // AI error (shown when AI failed or was unavailable)
+        if (record.ai_error) {
+          latestAiError.textContent = '⚠ AI analysis unavailable: ' + record.ai_error;
+          latestAiError.style.display = '';
+        } else {
+          latestAiError.style.display = 'none';
+        }
+
         latestSummary.textContent = plaque.summary || 'Analysis complete.';
 
         latestZones.innerHTML = '';

@@ -35,3 +35,19 @@ This repo now includes `render.yaml` for one-click deployment of the web app.
 	- `DEVICE_INGEST_KEY` (optional)
 
 Render will provide one public URL for the full web UI (dashboard, trends, recommendations, etc.).
+
+## Hydrogel AI Scan — Required Env Vars
+
+The hydrogel scan page uses a vision-capable AI model (Option B) to analyse uploaded images and return real pH estimates, plaque zone scores, and brushing recommendations.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `OPENAI_API_KEY` | Yes (for AI) | — | OpenAI or OpenRouter API key. Falls back to `OPENROUTER_API_KEY` if not set. |
+| `OPENAI_MODEL` | No | `openai/gpt-4o-mini` | Vision-capable model name (OpenRouter or OpenAI model ID). |
+| `OPENAI_BASE_URL` | No | `https://openrouter.ai/api/v1/chat/completions` | OpenAI-compatible endpoint. Change to `https://api.openai.com/v1/chat/completions` for direct OpenAI. |
+| `OPENAI_TIMEOUT_SEC` | No | `30` | Request timeout in seconds for the AI vision call. |
+
+**Quick setup on Render:**
+- If you already have `OPENROUTER_API_KEY` set in Render, the hydrogel AI scan will automatically use it — no extra configuration needed.
+- To use OpenAI directly, set `OPENAI_API_KEY` to your OpenAI key and `OPENAI_BASE_URL` to `https://api.openai.com/v1/chat/completions`.
+- Never commit API keys to source code. Always use Render's secret env var panel.

@@ -15,3 +15,17 @@ services:
         value: "20"
       - key: DEVICE_INGEST_KEY
         sync: false
+      # Hydrogel AI vision analysis (Option B).
+      # Set OPENAI_API_KEY to your OpenAI or OpenRouter key.
+      # Falls back to OPENROUTER_API_KEY automatically if not set.
+      - key: OPENAI_API_KEY
+        sync: false
+      # Vision-capable model used for hydrogel scan analysis.
+      - key: OPENAI_MODEL
+        value: openai/gpt-4o-mini
+      # OpenAI-compatible endpoint. Defaults to OpenRouter.
+      # Use https://api.openai.com/v1/chat/completions for direct OpenAI.
+      - key: OPENAI_BASE_URL
+        value: https://openrouter.ai/api/v1/chat/completions
+      - key: OPENAI_TIMEOUT_SEC
+        value: "30"
