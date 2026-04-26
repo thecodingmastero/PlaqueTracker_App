@@ -51,6 +51,12 @@ MAX_UI_TRENDS_PAGE_POINTS = 20
 MAX_UI_TABLE_ROWS = 120
 MAX_STORED_SCANS = 2000
 
+# MIME type map used for base64 image encoding in AI vision calls
+_IMAGE_MIME_TYPES = {
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+    '.gif': 'image/gif', '.webp': 'image/webp'
+}
+
 
 def get_sensor_scans(scans):
     return [s for s in (scans or []) if s.get('source_type') in ('sensor', 'sensor_wifi')]
@@ -155,9 +161,7 @@ def analyze_hydrogel_with_ai(image_path):
     with open(image_path, 'rb') as img_f:
         img_data = img_f.read()
     ext = os.path.splitext(image_path)[1].lower()
-    mime_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-                '.gif': 'image/gif', '.webp': 'image/webp'}
-    mime_type = mime_map.get(ext, 'image/jpeg')
+    mime_type = _IMAGE_MIME_TYPES.get(ext, 'image/jpeg')
     img_b64 = base64.b64encode(img_data).decode('utf-8')
     data_url = f'data:{mime_type};base64,{img_b64}'
 
@@ -216,7 +220,9 @@ def analyze_hydrogel_with_ai(image_path):
         try:
             err = resp.json()
             if isinstance(err, dict):
-                msg = ((err.get('error') or {}).get('message') if isinstance(err.get('error'), dict) else '') or ''
+                err_detail = err.get('error')
+                if isinstance(err_detail, dict):
+                    msg = str(err_detail.get('message') or '')
         except Exception:
             pass
         raise RuntimeError(f'AI API HTTP {resp.status_code}' + (f': {msg}' if msg else ''))
@@ -267,16 +273,17 @@ def analyze_hydrogel_with_ai(image_path):
                 except Exception:
                     score = 50
                 zones.append({'name': name, 'level': level, 'score': score})
-    # Pad missing zones with defaults derived from estimated pH
+    # Pad missing zones with defaults derived from estimated pH.
+    # Formula: base 52% risk at neutral pH 6.8, scaled ±22 per pH unit.
     if len(zones) < 4:
         base_score = max(0, min(100, int(round(52 + (6.8 - ph) * 22))))
         for name in expected_zone_names[len(zones):]:
             zones.append({'name': name, 'level': 'Moderate', 'score': base_score})
 
-    # Validate actions
+    # Validate actions (limit to 4 to match prompt requirement of 2-4 recommendations)
     raw_actions = parsed.get('actions') or []
     if isinstance(raw_actions, list):
-        actions = [str(a) for a in raw_actions if a][:6]
+        actions = [str(a) for a in raw_actions if a][:4]
     else:
         actions = []
     if not actions:
@@ -1399,7 +1406,7 @@ def api_upload_scan():
     except Exception:
         pass
 
-    return jsonify({'status': 'ok', 'record': record, 'earned_xp': 10})
+    return jsonify({'status': 'ok', 'record': {k: v for k, v in record.items() if k != 'ingest_response'}, 'earned_xp': 10})
 
 
 @app.route('/api/profile', methods=['GET', 'POST'])
