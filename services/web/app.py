@@ -378,7 +378,7 @@ def get_market_items():
         {'id': 'brush_up', 'name': 'Toothbrush Upgrade', 'cost': 120, 'category': 'Boost', 'desc': 'Animated toothbrush for your dashboard.'},
         {'id': 'confetti', 'name': 'Confetti Celebration', 'cost': 200, 'category': 'Cosmetic', 'desc': 'Play confetti when you save profile or hit a streak.'},
         {'id': 'theme_rainbow', 'name': 'Rainbow Theme Pack', 'cost': 300, 'category': 'Cosmetic', 'desc': 'Unlock a colorful premium look.'},
-        {'id': 'avatar_pet', 'name': 'Tooth Fairy Pet Avatar', 'cost': 450, 'category': 'Cosmetic', 'desc': 'Cute companion for your profile.'},
+        {'id': 'profile_helper', 'name': 'Profile Helper', 'cost': 450, 'category': 'Cosmetic', 'desc': 'Friendly companion for your profile and XP area.'},
         {'id': 'quiz_pass', 'name': 'Quiz Challenge Pass', 'cost': 180, 'category': 'Challenge', 'desc': 'Access bonus XP quiz challenges.'}
     ]
 
@@ -1502,31 +1502,48 @@ def api_rewards():
                 except Exception:
                     pass
                 action_result = {'ok': True, 'message': f'earned {xp} xp', 'xp': xp, 'type': etype}
-    elif action == 'purchase':
+        elif action == 'purchase':
         raw_item = payload.get('item_id')
         item_id = str(raw_item) if raw_item is not None else None
         market = {item['id']: item['cost'] for item in get_market_items()}
-        if item_id is not None:
+
+        if item_id is None:
+            action_result = {'ok': False, 'message': 'item_id is required'}
+        else:
             cost = market.get(item_id)
             if not cost:
                 action_result = {'ok': False, 'message': 'invalid item'}
             elif item_id in rewards.get('purchases', []):
                 action_result = {'ok': False, 'message': 'item already owned', 'item_id': item_id}
             elif rewards.get('xp', 0) < cost:
-                action_result = {'ok': False, 'message': 'not enough xp', 'required_xp': cost, 'current_xp': rewards.get('xp', 0)}
+                action_result = {
+                    'ok': False,
+                    'message': 'not enough xp',
+                    'required_xp': cost,
+                    'current_xp': rewards.get('xp', 0)
+                }
             else:
-                rewards['xp'] = rewards.get('xp',0) - cost
+                rewards['xp'] = rewards.get('xp', 0) - cost
                 rewards.setdefault('purchases', []).append(item_id)
+
+                # keep an inventory list for cosmetic rendering checks
+                rewards.setdefault('inventory', [])
+                if item_id not in rewards['inventory']:
+                    rewards['inventory'].append(item_id)
+
                 data['rewards'] = rewards
                 save_data(data)
                 try:
                     broadcast_event('rewards', rewards)
                 except Exception:
                     pass
-                action_result = {'ok': True, 'message': 'purchase successful', 'item_id': item_id, 'cost': cost}
-        else:
-            action_result = {'ok': False, 'message': 'item_id is required'}
-    return jsonify({'status': 'ok', 'rewards': data.get('rewards', {}), 'result': action_result})
+
+                action_result = {
+                    'ok': True,
+                    'message': 'purchase successful',
+                    'item_id': item_id,
+                    'cost': cost
+                }
 
 
 @app.route('/test-ingest', methods=['POST'])
