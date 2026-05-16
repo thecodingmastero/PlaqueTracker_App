@@ -1502,7 +1502,7 @@ def api_rewards():
                 except Exception:
                     pass
                 action_result = {'ok': True, 'message': f'earned {xp} xp', 'xp': xp, 'type': etype}
-        elif action == 'purchase':
+    elif action == 'purchase':
         raw_item = payload.get('item_id')
         item_id = str(raw_item) if raw_item is not None else None
         market = {item['id']: item['cost'] for item in get_market_items()}
