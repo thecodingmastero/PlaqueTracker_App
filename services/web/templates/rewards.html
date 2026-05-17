@@ -7,17 +7,8 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
     <style>
-      .xp-helper-img{
-        width: 56px;
-        height: 56px;
-        object-fit: contain;
-      }
-      @media (max-width: 576px){
-        .xp-helper-img{
-          width: 44px;
-          height: 44px;
-        }
-      }
+      .xp-helper-img{ width:56px; height:56px; object-fit:contain; }
+      @media (max-width:576px){ .xp-helper-img{ width:44px; height:44px; } }
     </style>
   </head>
   <body class="bg-light">
@@ -40,8 +31,9 @@
     </nav>
 
     <div class="container py-4">
-      <div id="toastHost" class="position-fixed top-0 end-0 p-3" style="z-index: 1080;"></div>
+      <div id="toastHost" class="position-fixed top-0 end-0 p-3" style="z-index:1080;"></div>
       <h2 class="fun-hero">🎁 Rewards & Goodies</h2>
+
       <div class="row mb-3">
         <div class="col-md-4">
           <div class="card p-3">
@@ -49,11 +41,7 @@
             <div class="d-flex align-items-center gap-2">
               <p class="display-6 mb-0">{{ rewards.xp }}</p>
               {% if rewards.get('purchases') and 'profile_helper' in rewards.get('purchases', []) %}
-              <img
-                src="{{ url_for('static', filename='img/lego-worker.png') }}"
-                alt="Profile Helper"
-                class="xp-helper-img"
-              />
+              <img src="{{ url_for('static', filename='img/lego-worker.png') }}" alt="Profile Helper" class="xp-helper-img" />
               {% endif %}
             </div>
             <p class="text-muted small">Points to spend on challenges</p>
@@ -89,13 +77,13 @@
         <h5 class="mt-3">Available Rewards</h5>
         <div class="row gy-2" id="availableRewards">
           {% for key, desc in badge_catalog.items() %}
-            <div class="col-md-4">
-              <div class="p-2 border rounded">
-                <strong>{{ key }}</strong>
-                <p class="small text-muted">{{ desc }}</p>
-                <button class="btn btn-sm btn-primary claim-btn" data-badge="{{ key }}">Claim 🎉</button>
-              </div>
+          <div class="col-md-4">
+            <div class="p-2 border rounded">
+              <strong>{{ key }}</strong>
+              <p class="small text-muted">{{ desc }}</p>
+              <button class="btn btn-sm btn-primary claim-btn" data-badge="{{ key }}">Claim 🎉</button>
             </div>
+          </div>
           {% endfor %}
         </div>
       </div>
@@ -121,17 +109,22 @@
         </div>
         <div class="row gy-2" id="marketplace">
           {% for item in market_items %}
-            <div class="col-md-4 market-item" data-category="{{ item.category }}" data-cost="{{ item.cost }}" data-name="{{ item.name }}">
-              <div class="p-2 border rounded text-center">
-                <strong>{{ item.name }}</strong>
-                <div class="small text-primary">{{ item.category }}</div>
-                <p class="small text-muted">{{ item.desc }}</p>
-                <div class="mt-2"><button class="btn btn-sm btn-success purchase-btn" data-id="{{ item.id }}" data-cost="{{ item.cost }}">Buy for {{ item.cost }} XP</button></div>
+          <div class="col-md-4 market-item" data-category="{{ item.category }}" data-cost="{{ item.cost }}" data-name="{{ item.name }}">
+            <div class="p-2 border rounded text-center">
+              <strong>{{ item.name }}</strong>
+              <div class="small text-primary">{{ item.category }}</div>
+              <p class="small text-muted">{{ item.desc }}</p>
+              <div class="mt-2">
+                <button class="btn btn-sm btn-success purchase-btn" data-id="{{ item.id }}" data-cost="{{ item.cost }}">
+                  Buy for {{ item.cost }} XP
+                </button>
               </div>
             </div>
+          </div>
           {% endfor %}
         </div>
       </div>
+
       <div class="card p-3 mt-3">
         <h5>Your Purchases</h5>
         <div id="purchasesList" class="d-flex gap-2 flex-wrap mt-2">
@@ -144,124 +137,33 @@
 
       <a href="/" class="btn btn-outline-primary mt-3">Back</a>
     </div>
+
     <script id="market-items-data" type="application/json">{{ market_items | tojson | safe }}</script>
     <script>
-      // claim button -> AJAX redeem
-      (function(){
-        const container = document.getElementById('availableRewards');
-        container && container.addEventListener('click', async (e)=>{
-          const btn = e.target.closest('.claim-btn');
-          if(!btn) return;
-          const badge = btn.getAttribute('data-badge');
-          btn.disabled = true;
-          try{
-            const res = await fetch('/api/rewards', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'redeem', badge})});
-            const j = await res.json();
-            if(j.status === 'ok'){
-              const xpEl = document.querySelector('.display-6');
-              if(xpEl) xpEl.textContent = j.rewards.xp;
-              const grid = document.querySelector('.rewards-grid');
-              if(grid){
-                grid.innerHTML = '';
-                (j.rewards.badges || []).forEach(b =>{
-                  const div = document.createElement('div'); div.className='reward-card'; div.innerHTML = `<strong>${b}</strong><p class="small text-muted"></p>`; grid.appendChild(div);
-                });
-              }
-            } else {
-              alert('Redeem failed');
-            }
-          }catch(err){ alert('Redeem error: '+err.message); }
-          finally{ btn.disabled = false; }
-        });
-      })();
-
-      // earn XP buttons
-      (function(){
-        const earnScan = document.getElementById('earnScan');
-        const daily = document.getElementById('dailyCheck');
-        const xpEl = document.querySelector('.display-6');
-        earnScan && earnScan.addEventListener('click', ()=>{ window.location.href = '/scans'; });
-        daily && daily.addEventListener('click', async ()=>{
-          daily.disabled = true;
-          try{
-            const res = await fetch('/api/rewards',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'earn', type:'daily'})});
-            const j = await res.json();
-            if(j.status==='ok' && (!j.result || j.result.ok)){
-              if(xpEl) xpEl.textContent = j.rewards.xp;
-              if(j.streak !== undefined) document.getElementById('streakCount').textContent = j.streak;
-              showToast('Daily XP added! ☀️', 'success');
-            } else {
-              const msg = (j.result && j.result.message) ? j.result.message : 'Daily check-in not available yet';
-              showToast(msg, 'warning');
-            }
-          }catch(err){ showToast('Error: '+err.message, 'danger'); }
-          finally{ daily.disabled = false; }
-        });
-
-        document.querySelectorAll('.earn-btn').forEach(btn => {
-          btn.addEventListener('click', async ()=>{
-            const type = btn.getAttribute('data-type');
-            btn.disabled = true;
-            try{
-              const res = await fetch('/api/rewards',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'earn', type})});
-              const j = await res.json();
-              if(j.status==='ok' && (!j.result || j.result.ok)){
-                if(xpEl) xpEl.textContent = j.rewards.xp;
-                const earned = j.result && j.result.xp ? j.result.xp : 0;
-                showToast(`Earned +${earned} XP`, 'success');
-              } else {
-                const msg = (j.result && j.result.message) ? j.result.message : 'Earn failed';
-                showToast(msg, 'warning');
-              }
-            }catch(err){ showToast('Earn error: '+err.message, 'danger'); }
-            finally{ btn.disabled = false; }
-          });
-        });
-      })();
-
-      // purchase from marketplace
-      (function(){
-        const market = document.getElementById('marketplace');
-        const xpEl = document.querySelector('.display-6');
-        market && market.addEventListener('click', async (e)=>{
-          const btn = e.target.closest('.purchase-btn');
-          if(!btn) return;
-          const id = btn.getAttribute('data-id');
-          btn.disabled = true;
-          try{
-            const res = await fetch('/api/rewards',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'purchase', item_id:id})});
-            const j = await res.json();
-            if(j.status==='ok'){
-              if(xpEl) xpEl.textContent = j.rewards.xp;
-              refreshPurchases(j.rewards);
-              if(j.result && j.result.ok){
-                showToast('Purchase successful! 🎉', 'success');
-                // if profile helper purchased, reload so Jinja condition renders helper immediately
-                if(id === 'profile_helper'){
-                  window.location.reload();
-                  return;
-                }
-              } else {
-                const msg = (j.result && j.result.message) ? j.result.message : 'Purchase failed';
-                showToast(`Purchase failed: ${msg}`, 'danger');
-              }
-            } else showToast('Purchase failed', 'danger');
-          }catch(err){ showToast('Purchase error: '+err.message, 'danger'); }
-          finally{ btn.disabled = false; }
-        });
-      })();
-
       const MARKET_MAP = {};
       const MARKET_ITEMS = JSON.parse(document.getElementById('market-items-data').textContent || '[]');
       (MARKET_ITEMS || []).forEach(mi => { MARKET_MAP[mi.id] = mi.name; });
+
+      function showToast(message, type){
+        const host = document.getElementById('toastHost');
+        if(!host) return;
+        const el = document.createElement('div');
+        el.className = `toast align-items-center text-bg-${type || 'primary'} border-0 mb-2`;
+        el.innerHTML = `<div class="d-flex"><div class="toast-body">${message}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+        host.appendChild(el);
+        new bootstrap.Toast(el, {delay:2500}).show();
+        el.addEventListener('hidden.bs.toast', ()=> el.remove());
+      }
 
       function refreshPurchases(rewards){
         const list = document.getElementById('purchasesList');
         if(!list) return;
         list.innerHTML = '';
         (rewards.purchases || []).forEach(p =>{
-          const name = MARKET_MAP[p] || p;
-          const div = document.createElement('div'); div.className='reward-card'; div.innerHTML = `<strong>${name}</strong>`; list.appendChild(div);
+          const div = document.createElement('div');
+          div.className='reward-card';
+          div.innerHTML = `<strong>${MARKET_MAP[p] || p}</strong>`;
+          list.appendChild(div);
         });
         updateOwnedButtons(rewards);
       }
@@ -283,7 +185,6 @@
         const cat = (document.getElementById('marketCategory')?.value || 'all').toLowerCase();
         const sort = document.getElementById('marketSort')?.value || 'cost_asc';
         const market = document.getElementById('marketplace');
-        if(!market) return;
         const items = Array.from(market.querySelectorAll('.market-item'));
 
         items.forEach(el => {
@@ -304,20 +205,86 @@
         visible.forEach(el => market.appendChild(el));
       }
 
-      function showToast(message, type){
-        const host = document.getElementById('toastHost');
-        if(!host) return;
-        const el = document.createElement('div');
-        el.className = `toast align-items-center text-bg-${type || 'primary'} border-0 mb-2`;
-        el.setAttribute('role', 'alert');
-        el.setAttribute('aria-live', 'assertive');
-        el.setAttribute('aria-atomic', 'true');
-        el.innerHTML = `<div class="d-flex"><div class="toast-body">${message}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button></div>`;
-        host.appendChild(el);
-        const toast = new bootstrap.Toast(el, {delay: 2500});
-        toast.show();
-        el.addEventListener('hidden.bs.toast', ()=> el.remove());
+      // claim
+      document.getElementById('availableRewards')?.addEventListener('click', async (e)=>{
+        const btn = e.target.closest('.claim-btn');
+        if(!btn) return;
+        btn.disabled = true;
+        try{
+          const res = await fetch('/api/rewards', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({action:'redeem', badge:btn.dataset.badge})
+          });
+          const j = await res.json();
+          if(j.status === 'ok'){
+            const xpEl = document.querySelector('.display-6');
+            if(xpEl) xpEl.textContent = j.rewards.xp;
+          }
+        } finally { btn.disabled = false; }
+      });
+
+      // earn
+      document.getElementById('earnScan')?.addEventListener('click', ()=> window.location.href='/scans');
+      document.getElementById('dailyCheck')?.addEventListener('click', ()=> earnType('daily'));
+      document.querySelectorAll('.earn-btn').forEach(btn => btn.addEventListener('click', ()=> earnType(btn.dataset.type)));
+
+      async function earnType(type){
+        try{
+          const res = await fetch('/api/rewards',{
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({action:'earn', type})
+          });
+          const j = await res.json();
+          if(j.status==='ok' && (!j.result || j.result.ok)){
+            const xpEl = document.querySelector('.display-6');
+            if(xpEl) xpEl.textContent = j.rewards.xp;
+            showToast('XP earned!', 'success');
+          } else showToast((j.result && j.result.message) || 'Earn failed', 'warning');
+        }catch(err){ showToast('Earn error: ' + err.message, 'danger'); }
       }
+
+      // purchase (robust JSON parsing)
+      document.getElementById('marketplace')?.addEventListener('click', async (e)=>{
+        const btn = e.target.closest('.purchase-btn');
+        if(!btn) return;
+        const id = btn.dataset.id;
+        btn.disabled = true;
+        try{
+          const res = await fetch('/api/rewards',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({action:'purchase', item_id:id})
+          });
+
+          const contentType = res.headers.get('content-type') || '';
+          const raw = await res.text();
+          if(!contentType.includes('application/json')){
+            throw new Error(`Server returned non-JSON (${res.status})`);
+          }
+
+          let j;
+          try { j = JSON.parse(raw); }
+          catch { throw new Error(`Invalid JSON from server (${res.status})`); }
+
+          if(j.status === 'ok'){
+            const xpEl = document.querySelector('.display-6');
+            if(xpEl) xpEl.textContent = j.rewards?.xp ?? '';
+            refreshPurchases(j.rewards || {});
+            if(j.result?.ok){
+              showToast('Purchase successful! 🎉', 'success');
+              if(id === 'profile_helper'){ window.location.reload(); return; }
+            } else {
+              showToast(`Purchase failed: ${j.result?.message || 'unknown error'}`, 'danger');
+            }
+          } else {
+            showToast(j.message || 'Purchase failed', 'danger');
+          }
+        }catch(err){
+          showToast('Purchase error: ' + err.message, 'danger');
+        }finally{
+          btn.disabled = false;
+        }
+      });
 
       (async function initRewardsState(){
         try{
@@ -335,6 +302,7 @@
       document.getElementById('marketCategory')?.addEventListener('change', applyMarketFilters);
       document.getElementById('marketSort')?.addEventListener('change', applyMarketFilters);
 
+      // Single SSE connection (avoid duplicates)
       if(typeof(EventSource) !== 'undefined'){
         const es = new EventSource('/events');
         es.addEventListener('rewards', (e)=>{
@@ -343,29 +311,21 @@
             const xpEl = document.querySelector('.display-6');
             if(xpEl) xpEl.textContent = r.xp;
             refreshPurchases(r);
-          }catch(err){console.error('rewards sse', err)}
-        });
-      }
 
-      if(typeof(EventSource) !== 'undefined'){
-        const es = new EventSource('/events');
-        es.addEventListener('rewards', (e)=>{
-          try{
-            const r = JSON.parse(e.data);
-            const xpEl = document.querySelector('.display-6');
-            if(xpEl) xpEl.textContent = r.xp;
             const grid = document.querySelector('.rewards-grid');
             if(grid){
               grid.innerHTML = '';
               (r.badges || []).forEach(b =>{
-                const div = document.createElement('div'); div.className='reward-card'; div.innerHTML = `<strong>${b}</strong><p class="small text-muted"></p>`; grid.appendChild(div);
+                const div = document.createElement('div');
+                div.className='reward-card';
+                div.innerHTML = `<strong>${b}</strong><p class="small text-muted"></p>`;
+                grid.appendChild(div);
               });
             }
-          }catch(err){console.error('rewards sse', err)}
+          }catch(err){ console.error('rewards sse', err); }
         });
       }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='mobile-nav.js') }}"></script>
-  </body>
-</html>
+  </body
