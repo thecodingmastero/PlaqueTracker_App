@@ -40,7 +40,7 @@
             <h5>XP</h5>
             <div class="d-flex align-items-center gap-2">
               <p class="display-6 mb-0">{{ rewards.xp }}</p>
-              {% if rewards.get('purchases') and 'profile_helper' in rewards.get('purchases', []) %}
+              {% if 'profile_helper' in rewards.get('purchases', []) or 'profile_helper' in rewards.get('inventory', []) %}
               <img src="{{ url_for('static', filename='img/lego-worker.png') }}" alt="Profile Helper" class="xp-helper-img" />
               {% endif %}
             </div>
@@ -130,7 +130,12 @@
         <div id="purchasesList" class="d-flex gap-2 flex-wrap mt-2">
           {% for p in rewards.get('purchases', []) %}
             {% set mi = (market_items | selectattr('id','equalto', p) | list | first) %}
-            <div class="reward-card"><strong>{{ mi.name if mi else p }}</strong></div>
+            <div class="reward-card d-flex align-items-center gap-2">
+              <strong>{{ mi.name if mi else p }}</strong>
+              <button class="btn btn-sm btn-outline-danger refund-btn" data-id="{{ p }}" data-cost="{{ mi.cost if mi else 0 }}">
+                Refund {{ mi.cost if mi else 0 }} XP
+              </button>
+            </div>
           {% endfor %}
         </div>
       </div>
@@ -160,9 +165,16 @@
         if(!list) return;
         list.innerHTML = '';
         (rewards.purchases || []).forEach(p =>{
+          const name = MARKET_MAP[p] || p;
+          const cost = (MARKET_ITEMS.find(x => x.id === p) || {}).cost || 0;
           const div = document.createElement('div');
-          div.className='reward-card';
-          div.innerHTML = `<strong>${MARKET_MAP[p] || p}</strong>`;
+          div.className='reward-card d-flex align-items-center gap-2';
+          div.innerHTML = `
+            <strong>${name}</strong>
+            <button class="btn btn-sm btn-outline-danger refund-btn" data-id="${p}" data-cost="${cost}">
+              Refund ${cost} XP
+            </button>
+          `;
           list.appendChild(div);
         });
         updateOwnedButtons(rewards);
@@ -172,11 +184,17 @@
         const owned = new Set(rewards.purchases || []);
         document.querySelectorAll('.purchase-btn').forEach(btn => {
           const id = btn.getAttribute('data-id');
+          const cost = btn.getAttribute('data-cost') || '';
           if(owned.has(id)){
             btn.disabled = true;
             btn.classList.remove('btn-success');
             btn.classList.add('btn-outline-secondary');
             btn.textContent = 'Owned ✅';
+          } else {
+            btn.disabled = false;
+            btn.classList.remove('btn-outline-secondary');
+            btn.classList.add('btn-success');
+            btn.textContent = `Buy for ${cost} XP`;
           }
         });
       }
@@ -243,7 +261,7 @@
         }catch(err){ showToast('Earn error: ' + err.message, 'danger'); }
       }
 
-      // purchase (robust JSON parsing)
+      // purchase
       document.getElementById('marketplace')?.addEventListener('click', async (e)=>{
         const btn = e.target.closest('.purchase-btn');
         if(!btn) return;
@@ -255,16 +273,7 @@
             headers:{'Content-Type':'application/json'},
             body: JSON.stringify({action:'purchase', item_id:id})
           });
-
-          const contentType = res.headers.get('content-type') || '';
-          const raw = await res.text();
-          if(!contentType.includes('application/json')){
-            throw new Error(`Server returned non-JSON (${res.status})`);
-          }
-
-          let j;
-          try { j = JSON.parse(raw); }
-          catch { throw new Error(`Invalid JSON from server (${res.status})`); }
+          const j = await res.json();
 
           if(j.status === 'ok'){
             const xpEl = document.querySelector('.display-6');
@@ -286,6 +295,36 @@
         }
       });
 
+      // refund
+      document.getElementById('purchasesList')?.addEventListener('click', async (e)=>{
+        const btn = e.target.closest('.refund-btn');
+        if(!btn) return;
+        const id = btn.dataset.id;
+        btn.disabled = true;
+        try{
+          const res = await fetch('/api/rewards',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({action:'refund', item_id:id})
+          });
+          const j = await res.json();
+
+          if(j.status === 'ok' && j.result?.ok){
+            const xpEl = document.querySelector('.display-6');
+            if(xpEl) xpEl.textContent = j.rewards?.xp ?? '';
+            refreshPurchases(j.rewards || {});
+            showToast(`Refunded ${j.result.refund_xp || 0} XP`, 'success');
+            if(id === 'profile_helper'){ window.location.reload(); return; }
+          } else {
+            showToast(`Refund failed: ${j.result?.message || j.message || 'unknown error'}`, 'danger');
+          }
+        }catch(err){
+          showToast('Refund error: ' + err.message, 'danger');
+        }finally{
+          btn.disabled = false;
+        }
+      });
+
       (async function initRewardsState(){
         try{
           const res = await fetch('/api/rewards');
@@ -302,7 +341,6 @@
       document.getElementById('marketCategory')?.addEventListener('change', applyMarketFilters);
       document.getElementById('marketSort')?.addEventListener('change', applyMarketFilters);
 
-      // Single SSE connection (avoid duplicates)
       if(typeof(EventSource) !== 'undefined'){
         const es = new EventSource('/events');
         es.addEventListener('rewards', (e)=>{
