@@ -378,7 +378,7 @@ def get_market_items():
         {'id': 'brush_up', 'name': 'Toothbrush Upgrade', 'cost': 120, 'category': 'Boost', 'desc': 'Animated toothbrush for your dashboard.'},
         {'id': 'confetti', 'name': 'Confetti Celebration', 'cost': 200, 'category': 'Cosmetic', 'desc': 'Play confetti when you save profile or hit a streak.'},
         {'id': 'theme_rainbow', 'name': 'Rainbow Theme Pack', 'cost': 300, 'category': 'Cosmetic', 'desc': 'Unlock a colorful premium look.'},
-        {'id': 'profile_helper', 'name': 'Profile Helper', 'cost': 450, 'category': 'Cosmetic', 'desc': 'Friendly companion for your profile and XP area.'},
+        {'id': 'profile_helper', 'name': 'Plaqi', 'cost': 450, 'category': 'Cosmetic', 'desc': 'Friendly companion for your profile and XP area.'},
         {'id': 'quiz_pass', 'name': 'Quiz Challenge Pass', 'cost': 180, 'category': 'Challenge', 'desc': 'Access bonus XP quiz challenges.'}
     ]
 
@@ -1433,117 +1433,147 @@ def api_profile():
 @app.route('/api/rewards', methods=['GET', 'POST'])
 def api_rewards():
     data = load_data()
+
+    # Normalize rewards shape
+    rewards = data.get('rewards')
+    if not isinstance(rewards, dict):
+        rewards = {}
+    rewards.setdefault('xp', 0)
+    rewards.setdefault('badges', [])
+    rewards.setdefault('purchases', [])
+    rewards.setdefault('inventory', [])
+
     if request.method == 'GET':
-        # include computed streak and market items in API response
         scans = data.get('scans', [])
         import datetime as _dt
-        dates = sorted({_dt.datetime.fromisoformat(s['timestamp'].replace('Z','')).date() for s in scans}) if scans else []
+        dates = sorted({_dt.datetime.fromisoformat(s['timestamp'].replace('Z', '')).date() for s in scans}) if scans else []
         streak = 0
         if dates:
             cur = dates[-1]
             while cur in dates:
                 streak += 1
                 cur = cur - _dt.timedelta(days=1)
-        market_items = get_market_items()
-        earn_actions = get_earn_actions()
-        resp = {'status': 'ok', 'rewards': data.get('rewards', {}), 'streak': streak, 'market_items': market_items, 'earn_actions': earn_actions}
-        return jsonify(resp)
+
+        return jsonify({
+            'status': 'ok',
+            'rewards': rewards,
+            'streak': streak,
+            'market_items': get_market_items(),
+            'earn_actions': get_earn_actions()
+        })
+
     try:
         payload = request.get_json(force=True) or {}
     except Exception:
         return jsonify({'status': 'error', 'message': 'invalid json'}), 400
+
     action = payload.get('action')
     action_result = {'ok': True}
-    rewards = data.get('rewards', {'xp': 0, 'badges': [], 'purchases': []})
-    if action == 'redeem':
-        badge = payload.get('badge')
-        if badge:
-            if badge not in rewards.get('badges', []):
-                rewards.setdefault('badges', []).append(badge)
-                rewards['xp'] = rewards.get('xp', 0) + int(payload.get('xp_delta', 20))
-                data['rewards'] = rewards
-                save_data(data)
-                try:
-                    broadcast_event('rewards', rewards)
-                except Exception:
-                    pass
-    elif action == 'earn':
-        etype = payload.get('type')
-        earn_actions = get_earn_actions()
-        config = earn_actions.get(str(etype) if etype is not None else '')
-        if not config:
-            action_result = {'ok': False, 'message': 'invalid earn action'}
-        else:
-            xp = int(config.get('xp', 0))
-            once_per_day = bool(config.get('once_per_day'))
-            if once_per_day:
-                from datetime import datetime
-                today = datetime.utcnow().date().isoformat()
-                daily_log = rewards.setdefault('daily_earn_log', {})
-                last_date = daily_log.get(etype)
-                if last_date == today:
-                    action_result = {'ok': False, 'message': f'{etype} already claimed today'}
+
+    try:
+        if action == 'redeem':
+            badge = payload.get('badge')
+            if badge:
+                if badge not in rewards.get('badges', []):
+                    rewards['badges'].append(badge)
+                    rewards['xp'] = int(rewards.get('xp', 0)) + int(payload.get('xp_delta', 20))
+                action_result = {'ok': True, 'message': 'redeem processed'}
+            else:
+                action_result = {'ok': False, 'message': 'badge is required'}
+
+        elif action == 'earn':
+            etype = payload.get('type')
+            earn_actions = get_earn_actions()
+            cfg = earn_actions.get(str(etype) if etype is not None else '')
+            if not cfg:
+                action_result = {'ok': False, 'message': 'invalid earn action'}
+            else:
+                xp = int(cfg.get('xp', 0))
+                once_per_day = bool(cfg.get('once_per_day'))
+                if once_per_day:
+                    from datetime import datetime
+                    today = datetime.utcnow().date().isoformat()
+                    daily_log = rewards.setdefault('daily_earn_log', {})
+                    if daily_log.get(etype) == today:
+                        action_result = {'ok': False, 'message': f'{etype} already claimed today'}
+                    else:
+                        rewards['xp'] = int(rewards.get('xp', 0)) + xp
+                        daily_log[etype] = today
+                        action_result = {'ok': True, 'message': f'earned {xp} xp', 'xp': xp, 'type': etype}
                 else:
-                    rewards['xp'] = rewards.get('xp', 0) + xp
-                    daily_log[etype] = today
-                    data['rewards'] = rewards
-                    save_data(data)
-                    try:
-                        broadcast_event('rewards', rewards)
-                    except Exception:
-                        pass
+                    rewards['xp'] = int(rewards.get('xp', 0)) + xp
                     action_result = {'ok': True, 'message': f'earned {xp} xp', 'xp': xp, 'type': etype}
+
+        elif action == 'purchase':
+            raw_item = payload.get('item_id')
+            item_id = str(raw_item) if raw_item is not None else None
+            market = {str(item['id']): int(item['cost']) for item in get_market_items()}
+
+            if not item_id:
+                action_result = {'ok': False, 'message': 'item_id is required'}
             else:
-                rewards['xp'] = rewards.get('xp', 0) + xp
-                data['rewards'] = rewards
-                save_data(data)
-                try:
-                    broadcast_event('rewards', rewards)
-                except Exception:
-                    pass
-                action_result = {'ok': True, 'message': f'earned {xp} xp', 'xp': xp, 'type': etype}
-    elif action == 'purchase':
-        raw_item = payload.get('item_id')
-        item_id = str(raw_item) if raw_item is not None else None
-        market = {item['id']: item['cost'] for item in get_market_items()}
+                cost = market.get(item_id)
+                if cost is None:
+                    action_result = {'ok': False, 'message': 'invalid item'}
+                elif item_id in rewards.get('purchases', []):
+                    action_result = {'ok': False, 'message': 'item already owned', 'item_id': item_id}
+                elif int(rewards.get('xp', 0)) < cost:
+                    action_result = {
+                        'ok': False,
+                        'message': 'not enough xp',
+                        'required_xp': cost,
+                        'current_xp': int(rewards.get('xp', 0))
+                    }
+                else:
+                    rewards['xp'] = int(rewards.get('xp', 0)) - cost
+                    rewards.setdefault('purchases', []).append(item_id)
+                    rewards.setdefault('inventory', [])
+                    if item_id not in rewards['inventory']:
+                        rewards['inventory'].append(item_id)
 
-        if item_id is None:
-            action_result = {'ok': False, 'message': 'item_id is required'}
-        else:
-            cost = market.get(item_id)
-            if not cost:
-                action_result = {'ok': False, 'message': 'invalid item'}
-            elif item_id in rewards.get('purchases', []):
-                action_result = {'ok': False, 'message': 'item already owned', 'item_id': item_id}
-            elif rewards.get('xp', 0) < cost:
-                action_result = {
-                    'ok': False,
-                    'message': 'not enough xp',
-                    'required_xp': cost,
-                    'current_xp': rewards.get('xp', 0)
-                }
+                    action_result = {
+                        'ok': True,
+                        'message': 'purchase successful',
+                        'item_id': item_id,
+                        'cost': cost
+                    }
+
+        elif action == 'refund':
+            raw_item = payload.get('item_id')
+            item_id = str(raw_item) if raw_item is not None else None
+            market = {str(item['id']): int(item['cost']) for item in get_market_items()}
+
+            if not item_id:
+                action_result = {'ok': False, 'message': 'item_id is required'}
+            elif item_id not in rewards.get('purchases', []):
+                action_result = {'ok': False, 'message': 'item not owned', 'item_id': item_id}
             else:
-                rewards['xp'] = rewards.get('xp', 0) - cost
-                rewards.setdefault('purchases', []).append(item_id)
-
-                # keep an inventory list for cosmetic rendering checks
-                rewards.setdefault('inventory', [])
-                if item_id not in rewards['inventory']:
-                    rewards['inventory'].append(item_id)
-
-                data['rewards'] = rewards
-                save_data(data)
-                try:
-                    broadcast_event('rewards', rewards)
-                except Exception:
-                    pass
+                refund_amount = int(market.get(item_id, 0))
+                rewards['purchases'] = [p for p in rewards.get('purchases', []) if p != item_id]
+                rewards['inventory'] = [i for i in rewards.get('inventory', []) if i != item_id]
+                rewards['xp'] = int(rewards.get('xp', 0)) + refund_amount
 
                 action_result = {
                     'ok': True,
-                    'message': 'purchase successful',
+                    'message': 'refund successful',
                     'item_id': item_id,
-                    'cost': cost
+                    'refund_xp': refund_amount
                 }
+
+        else:
+            action_result = {'ok': False, 'message': 'invalid action'}
+
+        data['rewards'] = rewards
+        save_data(data)
+        try:
+            broadcast_event('rewards', rewards)
+        except Exception:
+            pass
+
+        return jsonify({'status': 'ok', 'rewards': rewards, 'result': action_result})
+
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'api_rewards failed: {str(e)}'}), 500
 
 
 @app.route('/test-ingest', methods=['POST'])
