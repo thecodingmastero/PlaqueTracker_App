@@ -5,8 +5,8 @@ import os
 import base64
 from datetime import datetime
 import time
-import random
 import uuid
+import random
 from urllib.parse import quote
 import smtplib
 from email.message import EmailMessage
@@ -62,6 +62,12 @@ PH_COLOR_MAP = [
     {'names': ('green',), 'rgb': '#2ECC71', 'estimatedPH': 7.0},
     {'names': ('blue',), 'rgb': '#3366FF', 'estimatedPH': 8.2},
     {'names': ('purple', 'violet'), 'rgb': '#8E44AD', 'estimatedPH': 8.6},
+]
+DEMO_SCAN_SEQUENCE = [
+    {'colorName': 'Red', 'rgbValue': '#E74C3C', 'phRange': (2.8, 3.6), 'confidence': 1.0},
+    {'colorName': 'Orange', 'rgbValue': '#F39C12', 'phRange': (4.6, 5.8), 'confidence': 1.0},
+    {'colorName': 'Light Green', 'rgbValue': '#90EE90', 'phRange': (6.85, 7.15), 'confidence': 1.0},
+    {'colorName': 'Blue', 'rgbValue': '#3366FF', 'phRange': (8.4, 9.4), 'confidence': 1.0},
 ]
 
 # MIME type map used for base64 image encoding in AI vision calls
@@ -249,16 +255,27 @@ def build_scan_reading(color_name=None, rgb_value=None, estimated_ph=None,
     return record
 
 
-def simulated_scan_reading():
-    item = random.choice(PH_COLOR_MAP)
-    jitter = random.uniform(-0.15, 0.15)
+def next_demo_scan_reading(data):
+    demo_state = data.get('demo_scan_state')
+    if not isinstance(demo_state, dict):
+        demo_state = {}
+        data['demo_scan_state'] = demo_state
+
+    index = int(demo_state.get('next_index', 0) or 0) % len(DEMO_SCAN_SEQUENCE)
+    item = DEMO_SCAN_SEQUENCE[index]
+    low, high = item['phRange']
+    estimated_ph = round(random.uniform(float(low), float(high)), 1)
+    demo_state['next_index'] = (index + 1) % len(DEMO_SCAN_SEQUENCE)
+    demo_state['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+
     return build_scan_reading(
-        color_name=item['names'][0],
-        rgb_value=item['rgb'],
-        estimated_ph=float(item['estimatedPH']) + jitter,
-        confidence=random.uniform(0.84, 0.96),
+        color_name=item['colorName'],
+        rgb_value=item['rgbValue'],
+        estimated_ph=estimated_ph,
+        confidence=item['confidence'],
         source='simulated',
-        device_id=SENSOR_DEVICE_ID
+        device_id=SENSOR_DEVICE_ID,
+        extra={'demo_step': index + 1}
     )
 
 
@@ -609,6 +626,25 @@ def add_scan_record(record):
     os.makedirs(OUTPUTS_DIR, exist_ok=True)
     with open(os.path.join(OUTPUTS_DIR, 'scan_result.json'), 'w') as f:
         json.dump(record, f, indent=2)
+
+
+def remove_recent_demo_scans(limit=10):
+    data = load_data()
+    scans = list(data.get('scans', []))
+    remaining_reversed = []
+    removed = 0
+
+    for rec in reversed(scans):
+        is_demo = rec.get('source') == 'simulated' or rec.get('source_type') == 'simulated'
+        if is_demo and removed < limit:
+            removed += 1
+            continue
+        remaining_reversed.append(rec)
+
+    data['scans'] = list(reversed(remaining_reversed))
+    data['demo_scan_state'] = {'next_index': 0, 'updated_at': datetime.utcnow().isoformat() + 'Z'}
+    save_data(data)
+    return data, removed
 
 
 # Simple Server-Sent Events (SSE) broadcaster for live updates in the UI
@@ -1588,7 +1624,9 @@ def api_sensor_start_scan():
 @app.route('/api/sensor/demo-scan', methods=['POST'])
 def api_sensor_demo_scan():
     # Demo fallback kept separate from Start Scan so real hardware problems are visible.
-    record = simulated_scan_reading()
+    data = load_data()
+    record = next_demo_scan_reading(data)
+    save_data(data)
     add_scan_record(record)
     try:
         broadcast_event('scan', record)
@@ -1601,6 +1639,26 @@ def api_sensor_demo_scan():
         'mode': 'simulated',
         'message': 'Demo reading saved.',
         'record': record
+    })
+
+
+@app.route('/api/sensor/reset-demo', methods=['POST'])
+def api_sensor_reset_demo():
+    data, removed = remove_recent_demo_scans(limit=10)
+    sensor_scans = get_sensor_scans(data.get('scans', []))
+    recent_for_chart = sensor_scans[-MAX_UI_TREND_POINTS:]
+    recent_for_table = list(reversed(sensor_scans[-MAX_UI_TABLE_ROWS:]))
+    series = [
+        {'t': s.get('timestamp'), 'pH': s.get('estimated_pH') or s.get('estimatedPH') or s.get('pH')}
+        for s in recent_for_chart
+    ]
+    return jsonify({
+        'status': 'ok',
+        'connection_status': 'Idle',
+        'message': f'Removed {removed} demo readings. Demo sequence reset to red.',
+        'removed': removed,
+        'series': series,
+        'scans': recent_for_table
     })
 
 

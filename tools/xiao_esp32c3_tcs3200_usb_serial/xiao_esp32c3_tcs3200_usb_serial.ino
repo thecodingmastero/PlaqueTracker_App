@@ -27,28 +27,29 @@ const uint32_t SETTLE_MS = 40;
 const uint32_t MEASURE_MS = 80;
 const uint32_t LOOP_DELAY_MS = 500;
 
-const float GREEN_DOM_RATIO = 1.15f;
-const float WARM_BIAS = 1.10f;
-const float COOL_BIAS = 1.10f;
-const float YELLOW_RG_CLOSE = 0.10f;
-const float YELLOW_BLUE_DROP = 0.80f;
-const float NEUTRAL_RB_CLOSE = 0.14f;
-const float NEUTRAL_G_FLOOR = 0.80f;
-const bool PH_HIGH_WHEN_RB_HIGH = false;
-const float RB_RATIO_AT_PH4 = 0.65f;
-const float RB_RATIO_AT_PH7 = 0.95f;
-const float RB_RATIO_AT_PH10 = 1.35f;
-const float LOW_PH_MAX = 6.65f;
-const float HIGH_PH_MIN = 7.35f;
-const float PH_LOW_SIDE_END = 7.00f;
-const float PH_LOW_SIDE_GAIN = 0.45f;
-const float PH_HIGH_SIDE_START = 7.20f;
-const float PH_HIGH_SIDE_GAIN = 0.42f;
-const float NEUTRAL_PH_TARGET = 7.0f;
-const float NEUTRAL_PULL = 0.85f;
+// Calibrated from this sensor/strip setup:
+//   Red pH 3:    R/B about 3.00, G/min(R,B) about 0.95
+//   Orange pH 5: R/B about 2.82-2.96, G/min(R,B) about 1.00
+//   Green pH 7:  R/B about 1.41, G/min(R,B) about 1.52
+//   Blue pH 9:   R/B about 0.94-1.04, G/min(R,B) about 0.90-0.98
+const float GREEN_DOM_MIN = 1.25f;
+const float RED_RB_MIN = 2.97f;
+const float ORANGE_RB_MIN = 1.80f;
+const float BLUE_RB_MAX = 1.20f;
+
+const float RED_PH = 3.0f;
+const float ORANGE_PH = 5.0f;
+const float GREEN_PH = 7.0f;
+const float BLUE_PH = 9.0f;
 
 static inline float absf(float x) {
   return (x < 0) ? -x : x;
+}
+
+static inline float clampf(float v, float lo, float hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
 }
 
 float measureFreqHz(uint32_t windowMs) {
@@ -71,57 +72,53 @@ float readChannelHz(bool s2, bool s3) {
   return measureFreqHz(MEASURE_MS);
 }
 
-float estimateRawPHFromChannels(float r, float b) {
-  float rbRatio = r / (b + 0.001f);
-  float estimated = 7.0f;
+float rbRatioFromChannels(float r, float b) {
+  return r / (b + 0.001f);
+}
 
-  if (PH_HIGH_WHEN_RB_HIGH) {
-    if (rbRatio <= RB_RATIO_AT_PH7) {
-      float span = RB_RATIO_AT_PH7 - RB_RATIO_AT_PH4;
-      estimated = 7.0f - (((RB_RATIO_AT_PH7 - rbRatio) / span) * 3.0f);
-    } else {
-      float span = RB_RATIO_AT_PH10 - RB_RATIO_AT_PH7;
-      estimated = 7.0f + (((rbRatio - RB_RATIO_AT_PH7) / span) * 3.0f);
-    }
-  } else {
-    if (rbRatio >= RB_RATIO_AT_PH7) {
-      float span = RB_RATIO_AT_PH10 - RB_RATIO_AT_PH7;
-      estimated = 7.0f - (((rbRatio - RB_RATIO_AT_PH7) / span) * 3.0f);
-    } else {
-      float span = RB_RATIO_AT_PH7 - RB_RATIO_AT_PH4;
-      estimated = 7.0f + (((RB_RATIO_AT_PH7 - rbRatio) / span) * 3.0f);
-    }
+float greenDominanceFromChannels(float r, float g, float b) {
+  float minRB = (r < b) ? r : b;
+  return g / (minRB + 0.001f);
+}
+
+float estimateRawPHFromChannels(float r, float g, float b) {
+  if (r < 1.0f && g < 1.0f && b < 1.0f) return -1.0f;
+
+  float rbRatio = rbRatioFromChannels(r, b);
+  float greenDom = greenDominanceFromChannels(r, g, b);
+
+  if (greenDom >= GREEN_DOM_MIN) {
+    float t = clampf((greenDom - GREEN_DOM_MIN) / 0.40f, 0.0f, 1.0f);
+    return GREEN_PH - 0.2f + (0.4f * t);
   }
-  return estimated;
+
+  if (rbRatio >= RED_RB_MIN) {
+    float t = clampf((rbRatio - RED_RB_MIN) / 0.15f, 0.0f, 1.0f);
+    return 3.4f - (0.6f * t);
+  }
+
+  if (rbRatio >= ORANGE_RB_MIN) {
+    float t = clampf((rbRatio - ORANGE_RB_MIN) / (RED_RB_MIN - ORANGE_RB_MIN), 0.0f, 1.0f);
+    return 5.8f - (1.2f * t);
+  }
+
+  if (rbRatio <= BLUE_RB_MAX) {
+    float t = clampf((BLUE_RB_MAX - rbRatio) / 0.35f, 0.0f, 1.0f);
+    return 8.4f + (1.0f * t);
+  }
+
+  return GREEN_PH;
 }
 
 float estimatePHFromChannels(float r, float g, float b, const char* label) {
   if (strcmp(label, "NO SIGNAL") == 0) return -1.0f;
-
-  float rawPH = estimateRawPHFromChannels(r, b);
-  float corrected = rawPH;
-  if (rawPH < PH_LOW_SIDE_END) {
-    corrected = PH_LOW_SIDE_END - ((PH_LOW_SIDE_END - rawPH) * PH_LOW_SIDE_GAIN);
-  } else if (rawPH > PH_HIGH_SIDE_START) {
-    corrected = PH_HIGH_SIDE_START + ((rawPH - PH_HIGH_SIDE_START) * PH_HIGH_SIDE_GAIN);
-  }
-
-  if (strcmp(label, "Neutral pH") == 0) {
-    corrected = corrected + ((NEUTRAL_PH_TARGET - corrected) * NEUTRAL_PULL);
-  }
-  return corrected;
+  return estimateRawPHFromChannels(r, g, b);
 }
 
 const char* classifyPH(float r, float g, float b, float estimatedPH) {
   if (r < 1.0f && g < 1.0f && b < 1.0f) return "NO SIGNAL";
-
-  float rgAvg = (r + g) / 2.0f;
-  bool rgClose = (absf(r - g) / (rgAvg + 0.001f)) <= YELLOW_RG_CLOSE;
-  bool blueLower = (b <= rgAvg * YELLOW_BLUE_DROP);
-  if (rgClose && blueLower) return "pH unclear";
-
-  if (estimatedPH <= LOW_PH_MAX) return "Low pH";
-  if (estimatedPH >= HIGH_PH_MIN) return "High pH";
+  if (estimatedPH < 6.6f) return "Low pH";
+  if (estimatedPH > 7.4f) return "High pH";
   return "Neutral pH";
 }
 
@@ -149,10 +146,9 @@ void loop() {
   float g = readChannelHz(HIGH, HIGH);
   float b = readChannelHz(LOW, HIGH);
   int outState = digitalRead(OUT_PIN);
-  float rawPH = estimateRawPHFromChannels(r, b);
+  float rawPH = estimateRawPHFromChannels(r, g, b);
   const char* label = classifyPH(r, g, b, rawPH);
   float pH = estimatePHFromChannels(r, g, b, label);
-  float minRB = (r < b) ? r : b;
 
   Serial.print("t=");
   Serial.print(millis());
@@ -163,11 +159,11 @@ void loop() {
   Serial.print("Hz B=");
   Serial.print(b, 1);
   Serial.print("Hz  R/B=");
-  Serial.print(r / (b + 0.001f), 3);
+  Serial.print(rbRatioFromChannels(r, b), 3);
   Serial.print(" raw_pH=");
   Serial.print(rawPH, 2);
   Serial.print("  G/min(R,B)=");
-  Serial.print(g / (minRB + 0.001f), 3);
+  Serial.print(greenDominanceFromChannels(r, g, b), 3);
   Serial.print("Hz  OUTstate=");
   Serial.print(outState);
   Serial.print("  => ");

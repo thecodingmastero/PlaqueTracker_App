@@ -13,6 +13,8 @@ LINE_RE = re.compile(
 
 def label_to_ph(label, r_hz=None, g_hz=None, b_hz=None, send_unclear=False):
     normalized = (label or "").strip().lower()
+    if normalized == "no signal":
+        return None
     if normalized == "low ph":
         return 5.4
     if normalized == "neutral ph":
@@ -166,6 +168,9 @@ def main():
 
         label = parsed["label"]
         p_h = parsed.get("estimated_ph")
+        if label.strip().lower() == "no signal":
+            print("not sent: no TCS3200 output signal detected")
+            continue
         if p_h is None:
             p_h = label_to_ph(
                 label=label,
@@ -175,6 +180,9 @@ def main():
                 send_unclear=args.send_unclear,
             )
         if p_h is None:
+            continue
+        if p_h < 0:
+            print(f"not sent: invalid pH {p_h:.2f}")
             continue
         if not scanning_enabled:
             print("not sent: app scanning is stopped")

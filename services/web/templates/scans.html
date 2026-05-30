@@ -44,6 +44,7 @@
               <button id="startScanBtn" class="btn btn-primary" type="button">Start Scan</button>
               <button id="stopScanBtn" class="btn btn-outline-secondary" type="button">Stop Scan</button>
               <button id="demoScanBtn" class="btn btn-outline-secondary" type="button">Demo Scan</button>
+              <button id="resetDemoBtn" class="btn btn-outline-secondary" type="button">Reset Demo</button>
             </div>
           </div>
 
@@ -142,6 +143,7 @@
       const startBtn = document.getElementById('startScanBtn');
       const stopBtn = document.getElementById('stopScanBtn');
       const demoBtn = document.getElementById('demoScanBtn');
+      const resetDemoBtn = document.getElementById('resetDemoBtn');
       const latestReading = document.getElementById('latestReading');
       const scanRows = document.getElementById('scanRows');
       const seenReadingIds = new Set();
@@ -189,10 +191,51 @@
         phChart.update();
       }
 
+      function rowHtml(record){
+        const colorName = record.colorName || record.color_name || record.classification || 'Unknown';
+        const rgbValue = record.rgbValue || record.rgb_value || '#94a3b8';
+        const ph = readingPH(record);
+        const category = record.phCategory || record.classification || 'Unknown';
+        return `<td>${record.timestamp || ''}</td>
+          <td><span class="table-color-dot" style="background:${rgbValue}"></span>${colorName}</td>
+          <td>${ph}</td>
+          <td>${category}</td>
+          <td>${record.source || record.source_type || 'sensor'}</td>`;
+      }
+
+      function refreshScans(seriesRows, tableRows){
+        phChart.data.labels = seriesRows.map(s => new Date(s.t).toLocaleString());
+        phChart.data.datasets[0].data = seriesRows.map(s => s.pH);
+        phChart.data.datasets[0].pointBackgroundColor = phChart.data.datasets[0].data.map(phColor);
+        phChart.update();
+
+        scanRows.innerHTML = '';
+        tableRows.forEach((record) => {
+          const row = document.createElement('tr');
+          row.innerHTML = rowHtml(record);
+          scanRows.appendChild(row);
+        });
+        seenReadingIds.clear();
+
+        if(tableRows.length){
+          const latest = tableRows[0];
+          const colorName = latest.colorName || latest.color_name || latest.classification || 'Unknown';
+          const rgbValue = latest.rgbValue || latest.rgb_value || '#94a3b8';
+          latestReading.classList.remove('d-none');
+          document.getElementById('latestColorDot').style.background = rgbValue;
+          document.getElementById('latestColorName').textContent = colorName;
+          document.getElementById('latestPH').textContent = readingPH(latest);
+          document.getElementById('latestCategory').textContent = latest.phCategory || latest.classification || 'Unknown';
+        }else{
+          latestReading.classList.add('d-none');
+        }
+      }
+
       async function postSensorCommand(url){
         startBtn.disabled = true;
         stopBtn.disabled = true;
         demoBtn.disabled = true;
+        resetDemoBtn.disabled = true;
         try{
           const res = await fetch(url, {method:'POST'});
           const out = await res.json();
@@ -208,6 +251,31 @@
           startBtn.disabled = false;
           stopBtn.disabled = false;
           demoBtn.disabled = false;
+          resetDemoBtn.disabled = false;
+        }
+      }
+
+      async function resetDemo(){
+        startBtn.disabled = true;
+        stopBtn.disabled = true;
+        demoBtn.disabled = true;
+        resetDemoBtn.disabled = true;
+        try{
+          const res = await fetch('/api/sensor/reset-demo', {method:'POST'});
+          const out = await res.json();
+          if(!res.ok || out.status !== 'ok'){
+            setStatus('Error', out.message || 'Reset failed.');
+            return;
+          }
+          refreshScans(out.series || [], out.scans || []);
+          setStatus(out.connection_status || 'Idle', out.message);
+        }catch(err){
+          setStatus('Error', 'Reset failed. Check that the app server is still running.');
+        }finally{
+          startBtn.disabled = false;
+          stopBtn.disabled = false;
+          demoBtn.disabled = false;
+          resetDemoBtn.disabled = false;
         }
       }
 
@@ -219,6 +287,7 @@
       startBtn.addEventListener('click', () => postSensorCommand('/api/sensor/start-scan'));
       stopBtn.addEventListener('click', () => postSensorCommand('/api/sensor/stop-scan'));
       demoBtn.addEventListener('click', () => postSensorCommand('/api/sensor/demo-scan'));
+      resetDemoBtn.addEventListener('click', resetDemo);
 
       if(window.EventSource){
         const events = new EventSource('/events');
