@@ -30,6 +30,41 @@
       <h2 class="fun-hero">🧪 pH Strip Sensor Scans</h2>
       <p class="text-muted">This page is for overall mouth pH from the strip sensor only. Hydrogel plaque imaging moved to the dedicated Hydrogel page. Showing recent history for faster performance.</p>
 
+      <div class="card mb-3 sensor-panel">
+        <div class="card-body">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div>
+              <h5 class="card-title mb-1">Color Strip Sensor</h5>
+              <div class="sensor-status-row">
+                <span id="connectionStatus" class="badge text-bg-secondary">Disconnected</span>
+                <span id="sensorMessage" class="text-muted">Turn on the Arduino/ESP32 sensor, then start a scan.</span>
+              </div>
+            </div>
+            <div class="d-flex gap-2">
+              <button id="startScanBtn" class="btn btn-primary" type="button">Start Scan</button>
+              <button id="stopScanBtn" class="btn btn-outline-secondary" type="button">Stop Scan</button>
+              <button id="demoScanBtn" class="btn btn-outline-secondary" type="button">Demo Scan</button>
+            </div>
+          </div>
+
+          <div id="latestReading" class="sensor-reading mt-3 {% if not latest %}d-none{% endif %}">
+            <div class="color-dot" id="latestColorDot" style="background: {{ latest.rgbValue or latest.rgb_value or '#94a3b8' }}"></div>
+            <div>
+              <div class="small text-muted">Latest strip color</div>
+              <strong id="latestColorName">{{ latest.colorName or latest.color_name or latest.classification or 'Unknown' }}</strong>
+            </div>
+            <div>
+              <div class="small text-muted">Estimated pH</div>
+              <strong id="latestPH">{{ latest.estimatedPH or latest.estimated_pH or latest.pH or '—' }}</strong>
+            </div>
+            <div>
+              <div class="small text-muted">Meaning</div>
+              <strong id="latestCategory">{{ latest.phCategory or latest.classification or 'Unknown' }}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="card mb-3 chart-container">
         <div class="card-body">
           <h5 class="card-title">pH Trends 📈</h5>
@@ -44,13 +79,18 @@
             <a href="/hydrogel" class="btn btn-sm btn-outline-primary">Go to Hydrogel Analysis</a>
           </div>
           <table class="table table-sm">
-            <thead><tr><th>Time</th><th>Source</th><th>pH</th></tr></thead>
-            <tbody>
+            <thead><tr><th>Time</th><th>Color</th><th>pH</th><th>Meaning</th><th>Source</th></tr></thead>
+            <tbody id="scanRows">
               {% for s in scans %}
                 <tr>
                   <td>{{ s.timestamp }}</td>
-                  <td>{{ s.source_type }}</td>
-                  <td>{{ s.estimated_pH or s.pH }}</td>
+                  <td>
+                    <span class="table-color-dot" style="background: {{ s.rgbValue or s.rgb_value or '#94a3b8' }}"></span>
+                    {{ s.colorName or s.color_name or s.classification or '—' }}
+                  </td>
+                  <td>{{ s.estimatedPH or s.estimated_pH or s.pH }}</td>
+                  <td>{{ s.phCategory or s.classification or '—' }}</td>
+                  <td>{{ s.source or s.source_type }}</td>
                 </tr>
               {% endfor %}
             </tbody>
@@ -82,7 +122,7 @@
         type:'line',
         data:{labels, datasets:[{label:'pH', data, borderColor:'rgb(75, 192, 192)', pointBackgroundColor: pointColors, tension:0.3, fill:false}]},
         options:{
-          scales:{y:{min:3,max:8}},
+          scales:{y:{min:3,max:9}},
           plugins:{
             tooltip:{
               callbacks:{
@@ -96,6 +136,102 @@
           }
         }
       });
+
+      const statusEl = document.getElementById('connectionStatus');
+      const messageEl = document.getElementById('sensorMessage');
+      const startBtn = document.getElementById('startScanBtn');
+      const stopBtn = document.getElementById('stopScanBtn');
+      const demoBtn = document.getElementById('demoScanBtn');
+      const latestReading = document.getElementById('latestReading');
+      const scanRows = document.getElementById('scanRows');
+      const seenReadingIds = new Set();
+
+      function setStatus(status, message){
+        statusEl.textContent = status;
+        statusEl.className = 'badge ' + (
+          status === 'Connected' ? 'text-bg-success' :
+          status === 'Idle' ? 'text-bg-success' :
+          status === 'Scanning' ? 'text-bg-primary' :
+          status === 'Error' ? 'text-bg-danger' : 'text-bg-secondary'
+        );
+        if(message) messageEl.textContent = message;
+      }
+
+      function readingPH(record){
+        return record.estimatedPH ?? record.estimated_pH ?? record.pH;
+      }
+
+      function updateLatest(record){
+        if(record.id && seenReadingIds.has(record.id)) return;
+        if(record.id) seenReadingIds.add(record.id);
+
+        const colorName = record.colorName || record.color_name || record.classification || 'Unknown';
+        const rgbValue = record.rgbValue || record.rgb_value || '#94a3b8';
+        const ph = readingPH(record);
+        const category = record.phCategory || record.classification || 'Unknown';
+        latestReading.classList.remove('d-none');
+        document.getElementById('latestColorDot').style.background = rgbValue;
+        document.getElementById('latestColorName').textContent = colorName;
+        document.getElementById('latestPH').textContent = ph;
+        document.getElementById('latestCategory').textContent = category;
+
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${record.timestamp || new Date().toISOString()}</td>
+          <td><span class="table-color-dot" style="background:${rgbValue}"></span>${colorName}</td>
+          <td>${ph}</td>
+          <td>${category}</td>
+          <td>${record.source || record.source_type || 'sensor'}</td>`;
+        scanRows.prepend(row);
+
+        phChart.data.labels.push(new Date(record.timestamp).toLocaleString());
+        phChart.data.datasets[0].data.push(ph);
+        phChart.data.datasets[0].pointBackgroundColor.push(phColor(ph));
+        phChart.update();
+      }
+
+      async function postSensorCommand(url){
+        startBtn.disabled = true;
+        stopBtn.disabled = true;
+        demoBtn.disabled = true;
+        try{
+          const res = await fetch(url, {method:'POST'});
+          const out = await res.json();
+          if(!res.ok || out.status !== 'ok'){
+            setStatus('Error', out.message || 'Sensor command failed.');
+            return;
+          }
+          setStatus(out.connection_status || 'Connected', out.message);
+          if(out.record) updateLatest(out.record);
+        }catch(err){
+          setStatus('Error', 'Sensor command failed. Check that the app server is still running.');
+        }finally{
+          startBtn.disabled = false;
+          stopBtn.disabled = false;
+          demoBtn.disabled = false;
+        }
+      }
+
+      fetch('/api/sensor/status')
+        .then(res => res.json())
+        .then(out => setStatus(out.connection_status || 'Disconnected', out.message))
+        .catch(() => setStatus('Error', 'Could not read sensor status.'));
+
+      startBtn.addEventListener('click', () => postSensorCommand('/api/sensor/start-scan'));
+      stopBtn.addEventListener('click', () => postSensorCommand('/api/sensor/stop-scan'));
+      demoBtn.addEventListener('click', () => postSensorCommand('/api/sensor/demo-scan'));
+
+      if(window.EventSource){
+        const events = new EventSource('/events');
+        events.addEventListener('scan', (event) => {
+          try{
+            const record = JSON.parse(event.data);
+            updateLatest(record);
+            setStatus('Connected', 'Sensor reading received.');
+          }catch(err){
+            setStatus('Error', 'A sensor reading arrived but could not be shown.');
+          }
+        });
+      }
     </script>
     <script src="{{ url_for('static', filename='mobile-nav.js') }}"></script>
   </body>

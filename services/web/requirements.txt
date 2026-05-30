@@ -1,3 +1,4 @@
 Flask
 requests
+pyserial
 -r ../../hydrogel_cv/requirements.txt

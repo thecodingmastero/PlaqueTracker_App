@@ -5,6 +5,8 @@ import os
 import base64
 from datetime import datetime
 import time
+import random
+import uuid
 from urllib.parse import quote
 import smtplib
 from email.message import EmailMessage
@@ -50,6 +52,17 @@ MAX_UI_TREND_POINTS = 240
 MAX_UI_TRENDS_PAGE_POINTS = 20
 MAX_UI_TABLE_ROWS = 120
 MAX_STORED_SCANS = 2000
+SENSOR_CONNECTED_WINDOW_SEC = 300
+
+SENSOR_DEVICE_ID = os.environ.get('SENSOR_DEVICE_ID', 'plaque-sensor-demo')
+PH_COLOR_MAP = [
+    {'names': ('red',), 'rgb': '#E74C3C', 'estimatedPH': 4.8},
+    {'names': ('orange',), 'rgb': '#F39C12', 'estimatedPH': 5.6},
+    {'names': ('yellow',), 'rgb': '#F7DC6F', 'estimatedPH': 6.2},
+    {'names': ('green',), 'rgb': '#2ECC71', 'estimatedPH': 7.0},
+    {'names': ('blue',), 'rgb': '#3366FF', 'estimatedPH': 8.2},
+    {'names': ('purple', 'violet'), 'rgb': '#8E44AD', 'estimatedPH': 8.6},
+]
 
 # MIME type map used for base64 image encoding in AI vision calls
 _IMAGE_MIME_TYPES = {
@@ -59,7 +72,14 @@ _IMAGE_MIME_TYPES = {
 
 
 def get_sensor_scans(scans):
-    return [s for s in (scans or []) if s.get('source_type') in ('sensor', 'sensor_wifi')]
+    return [s for s in (scans or []) if s.get('source_type') in ('sensor', 'sensor_wifi', 'simulated')]
+
+
+def get_real_sensor_scans(scans):
+    return [
+        s for s in (scans or [])
+        if s.get('source_type') in ('sensor', 'sensor_wifi') and s.get('source') != 'simulated'
+    ]
 
 
 def get_hydrogel_scans(scans):
@@ -84,11 +104,162 @@ def get_device_scan_enabled(data, device_id):
 
 def set_device_scan_enabled(data, device_id, enabled):
     controls = get_device_controls(data)
-    controls[device_id] = {
-        'scanning_enabled': bool(enabled),
-        'updated_at': datetime.utcnow().isoformat() + 'Z'
+    entry = controls.get(device_id) if isinstance(controls.get(device_id), dict) else {}
+    entry['scanning_enabled'] = bool(enabled)
+    entry['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    controls[device_id] = entry
+
+
+def mark_device_seen(data, device_id):
+    controls = get_device_controls(data)
+    entry = controls.get(device_id) if isinstance(controls.get(device_id), dict) else {}
+    entry.setdefault('scanning_enabled', False)
+    entry['last_seen'] = datetime.utcnow().isoformat() + 'Z'
+    controls[device_id] = entry
+
+
+def _parse_timestamp(value):
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00')).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def latest_connected_sensor_device(data):
+    now = datetime.utcnow()
+    latest = None
+
+    for rec in reversed(get_real_sensor_scans(data.get('scans', []))):
+        device_id = str(rec.get('device_id') or '').strip()
+        seen_at = _parse_timestamp(rec.get('timestamp'))
+        if not device_id or not seen_at:
+            continue
+        age_sec = (now - seen_at).total_seconds()
+        if age_sec <= SENSOR_CONNECTED_WINDOW_SEC:
+            latest = {
+                'device_id': device_id,
+                'last_seen': rec.get('timestamp'),
+                'age_sec': round(age_sec, 1),
+                'scanning_enabled': get_device_scan_enabled(data, device_id),
+                'heartbeat_source': 'reading'
+            }
+            break
+
+    for device_id, conf in get_device_controls(data).items():
+        if device_id == SENSOR_DEVICE_ID:
+            continue
+        seen_at = _parse_timestamp(conf.get('last_seen') or conf.get('updated_at'))
+        if not seen_at:
+            continue
+        age_sec = (now - seen_at).total_seconds()
+        if age_sec > SENSOR_CONNECTED_WINDOW_SEC:
+            continue
+        if not latest or age_sec < latest['age_sec']:
+            latest = {
+                'device_id': device_id,
+                'last_seen': (conf.get('last_seen') or conf.get('updated_at')),
+                'age_sec': round(age_sec, 1),
+                'scanning_enabled': bool(conf.get('scanning_enabled', True)),
+                'heartbeat_source': 'control'
+            }
+
+    return latest
+
+
+def latest_real_sensor_device(data):
+    return latest_connected_sensor_device(data)
+    return None
+
+
+def ph_category(estimated_ph):
+    try:
+        value = float(estimated_ph)
+    except Exception:
+        return 'Unknown'
+    if value < 6.9:
+        return 'Acidic'
+    if value <= 7.2:
+        return 'Neutral'
+    return 'Alkaline'
+
+
+def _hex_to_rgb(rgb_value):
+    value = str(rgb_value or '').strip()
+    if value.startswith('#') and len(value) == 7:
+        try:
+            return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+        except Exception:
+            return None
+    return None
+
+
+def estimate_ph_from_strip_color(color_name=None, rgb_value=None):
+    """Calibratable pH strip mapping. Replace these values after lab calibration."""
+    color_key = str(color_name or '').strip().lower()
+    for item in PH_COLOR_MAP:
+        if any(name in color_key for name in item['names']):
+            return float(item['estimatedPH']), item['rgb'], item['names'][0].title()
+
+    rgb = _hex_to_rgb(rgb_value)
+    if rgb:
+        r, g, b = rgb
+        if b >= r and b >= g:
+            return 8.2, rgb_value, 'Blue'
+        if g >= r and g >= b:
+            return 7.0, rgb_value, 'Green'
+        if r >= 200 and g >= 120:
+            return 5.8, rgb_value, 'Yellow/Orange'
+        return 5.0, rgb_value, 'Red'
+
+    return 7.0, '#2ECC71', 'Green'
+
+
+def build_scan_reading(color_name=None, rgb_value=None, estimated_ph=None,
+                       confidence=None, source='simulated', device_id=None,
+                       timestamp=None, extra=None):
+    if estimated_ph is None:
+        estimated_ph, mapped_rgb, mapped_name = estimate_ph_from_strip_color(color_name, rgb_value)
+        color_name = color_name or mapped_name
+        rgb_value = rgb_value or mapped_rgb
+    estimated_ph = round(float(estimated_ph), 2)
+    timestamp = timestamp or (datetime.utcnow().isoformat() + 'Z')
+    color_name = str(color_name or 'Green').strip().title()
+    rgb_value = str(rgb_value or '#2ECC71').strip()
+    category = ph_category(estimated_ph)
+    record = {
+        'id': str(uuid.uuid4()),
+        'timestamp': timestamp,
+        'colorName': color_name,
+        'rgbValue': rgb_value,
+        'estimatedPH': estimated_ph,
+        'phCategory': category,
+        'confidence': round(float(confidence if confidence is not None else 0.82), 2),
+        'source': source,
+        # Legacy fields keep existing charts/pages working while the UI migrates.
+        'source_type': 'sensor' if source == 'sensor' else 'simulated',
+        'device_id': device_id or SENSOR_DEVICE_ID,
+        'pH': estimated_ph,
+        'estimated_pH': estimated_ph,
+        'classification': category,
+        'color_name': color_name,
+        'rgb_value': rgb_value
     }
-    data['device_controls'] = controls
+    if extra:
+        record.update(extra)
+    return record
+
+
+def simulated_scan_reading():
+    item = random.choice(PH_COLOR_MAP)
+    jitter = random.uniform(-0.15, 0.15)
+    return build_scan_reading(
+        color_name=item['names'][0],
+        rgb_value=item['rgb'],
+        estimated_ph=float(item['estimatedPH']) + jitter,
+        confidence=random.uniform(0.84, 0.96),
+        source='simulated',
+        device_id=SENSOR_DEVICE_ID
+    )
 
 
 def build_plaque_location_feedback(hydrogel_result):
@@ -479,7 +650,7 @@ def events():
 def add_cors_headers(response):
     # allow simple local dev cross-origin requests and preflight responses
     response.headers.setdefault('Access-Control-Allow-Origin', '*')
-    response.headers.setdefault('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.setdefault('Access-Control-Allow-Headers', 'Content-Type, X-Device-Key')
     response.headers.setdefault('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
     return response
 
@@ -491,7 +662,7 @@ def handle_options_preflight():
         resp = app.make_default_options_response()
         h = resp.headers
         h['Access-Control-Allow-Origin'] = '*'
-        h['Access-Control-Allow-Headers'] = 'Content-Type'
+        h['Access-Control-Allow-Headers'] = 'Content-Type, X-Device-Key'
         h['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
         return resp
 
@@ -556,8 +727,9 @@ def scans():
     sensor_scans = get_sensor_scans(data.get('scans', []))
     recent_for_chart = sensor_scans[-MAX_UI_TREND_POINTS:]
     recent_for_table = list(reversed(sensor_scans[-MAX_UI_TABLE_ROWS:]))
-    series = [{'t': s.get('timestamp'), 'pH': s.get('estimated_pH') or s.get('pH')} for s in recent_for_chart]
-    return render_template('scans.html', scans=recent_for_table, series=series)
+    series = [{'t': s.get('timestamp'), 'pH': s.get('estimated_pH') or s.get('estimatedPH') or s.get('pH')} for s in recent_for_chart]
+    latest = recent_for_table[0] if recent_for_table else None
+    return render_template('scans.html', scans=recent_for_table, series=series, latest=latest)
 
 
 @app.route('/hydrogel')
@@ -1333,6 +1505,8 @@ def api_device_control(device_id):
 
     data = load_data()
     if request.method == 'GET':
+        mark_device_seen(data, device_id)
+        save_data(data)
         return jsonify({
             'status': 'ok',
             'device_id': device_id,
@@ -1355,6 +1529,98 @@ def api_device_control(device_id):
         'status': 'ok',
         'device_id': device_id,
         'scanning_enabled': enabled
+    })
+
+
+@app.route('/api/sensor/status', methods=['GET'])
+def api_sensor_status():
+    data = load_data()
+    device = latest_connected_sensor_device(data)
+    if device:
+        connection_status = 'Scanning' if device.get('scanning_enabled') else 'Idle'
+        return jsonify({
+            'status': 'ok',
+            'device_id': device['device_id'],
+            'connection_status': connection_status,
+            'mode': 'hardware',
+            'last_seen': device['last_seen'],
+            'message': f"Sensor {connection_status.lower()}: {device['device_id']}"
+        })
+
+    return jsonify({
+        'status': 'ok',
+        'device_id': SENSOR_DEVICE_ID,
+        'connection_status': 'Disconnected',
+        'mode': 'hardware',
+        'message': 'No hardware sensor is connected yet.'
+    })
+
+
+@app.route('/api/sensor/start-scan', methods=['POST'])
+def api_sensor_start_scan():
+    data = load_data()
+    device = latest_connected_sensor_device(data)
+    if device:
+        set_device_scan_enabled(data, device['device_id'], True)
+        save_data(data)
+
+        # Real sensor integration hook:
+        # The current Arduino sketches poll /api/device-control/<device_id>.
+        # Setting scanning_enabled=true tells that hardware to begin posting
+        # readings to /api/device-ingest. A BLE implementation can send the
+        # START_SCAN command here and return the same ScanReading shape.
+        return jsonify({
+            'status': 'ok',
+            'device_id': device['device_id'],
+            'connection_status': 'Scanning',
+            'mode': 'hardware',
+            'message': 'Start command sent. Waiting for the sensor reading...'
+        })
+
+    return jsonify({
+        'status': 'error',
+        'connection_status': 'Error',
+        'mode': 'hardware',
+        'message': 'No connected sensor found. Turn on the Arduino/ESP32 and wait for it to post a reading, or use Demo Scan.'
+    }), 409
+
+
+@app.route('/api/sensor/demo-scan', methods=['POST'])
+def api_sensor_demo_scan():
+    # Demo fallback kept separate from Start Scan so real hardware problems are visible.
+    record = simulated_scan_reading()
+    add_scan_record(record)
+    try:
+        broadcast_event('scan', record)
+    except Exception:
+        pass
+
+    return jsonify({
+        'status': 'ok',
+        'connection_status': 'Scanning',
+        'mode': 'simulated',
+        'message': 'Demo reading saved.',
+        'record': record
+    })
+
+
+@app.route('/api/sensor/stop-scan', methods=['POST'])
+def api_sensor_stop_scan():
+    data = load_data()
+    device = latest_connected_sensor_device(data)
+    stopped_device_id = device['device_id'] if device else SENSOR_DEVICE_ID
+    if device:
+        set_device_scan_enabled(data, device['device_id'], False)
+    set_device_scan_enabled(data, SENSOR_DEVICE_ID, False)
+    save_data(data)
+
+    # Real sensor integration hook:
+    # Send STOP_SCAN over BLE, serial, or an ESP32 HTTP endpoint here.
+    return jsonify({
+        'status': 'ok',
+        'device_id': stopped_device_id,
+        'connection_status': 'Idle' if device else 'Disconnected',
+        'message': 'Scanning stopped.' if device else 'No connected sensor found.'
     })
 
 
@@ -1641,6 +1907,13 @@ def _ph_from_label(label):
     return None
 
 
+def _first_payload_value(payload, keys):
+    for key in keys:
+        if key in payload and payload.get(key) is not None:
+            return payload.get(key)
+    return None
+
+
 @app.route('/api/device-ingest', methods=['POST'])
 def api_device_ingest():
     if DEVICE_INGEST_KEY:
@@ -1655,12 +1928,16 @@ def api_device_ingest():
 
     device_id = str(payload.get('device_id') or 'uno-r4-wifi').strip()
     data = load_data()
+    mark_device_seen(data, device_id)
     if not get_device_scan_enabled(data, device_id):
+        save_data(data)
         return jsonify({'status': 'paused', 'message': 'scanning is paused for this device'}), 409
 
-    label = str(payload.get('classification') or payload.get('label') or '').strip()
+    label = str(payload.get('classification') or payload.get('label') or payload.get('colorName') or payload.get('color_name') or '').strip()
+    color_name = str(payload.get('colorName') or payload.get('color_name') or label or '').strip()
+    rgb_value = _first_payload_value(payload, ('rgbValue', 'rgb_value', 'rgb', 'hex'))
 
-    p_h_raw = payload.get('pH', payload.get('ph'))
+    p_h_raw = _first_payload_value(payload, ('estimatedPH', 'estimated_pH', 'pH', 'ph'))
     p_h = None
     try:
         if p_h_raw is not None:
@@ -1669,6 +1946,10 @@ def api_device_ingest():
         p_h = None
     if p_h is None:
         p_h = _ph_from_label(label)
+    if p_h is None and (color_name or rgb_value):
+        p_h, mapped_rgb, mapped_name = estimate_ph_from_strip_color(color_name, rgb_value)
+        rgb_value = rgb_value or mapped_rgb
+        color_name = color_name or mapped_name
     if p_h is None:
         return jsonify({'status': 'error', 'message': 'missing pH (or unrecognized classification label)'}), 400
 
@@ -1689,21 +1970,29 @@ def api_device_ingest():
     except Exception:
         b_hz = None
 
-    record = {
-        'timestamp': ts,
-        'source_type': 'sensor_wifi',
-        'device_id': device_id,
-        'pH': p_h,
-        'estimated_pH': p_h,
-        'classification': label or None,
-        'r_hz': r_hz,
-        'g_hz': g_hz,
-        'b_hz': b_hz,
-        'out_state': payload.get('out_state'),
-        'seq': payload.get('seq'),
-        'battery': payload.get('battery')
-    }
+    record = build_scan_reading(
+        color_name=color_name or label or ph_category(p_h),
+        rgb_value=rgb_value,
+        estimated_ph=p_h,
+        confidence=payload.get('confidence'),
+        source='sensor',
+        device_id=device_id,
+        timestamp=ts,
+        extra={
+            'source_type': 'sensor_wifi',
+            'classification': label or ph_category(p_h),
+            'r_hz': r_hz,
+            'g_hz': g_hz,
+            'b_hz': b_hz,
+            'out_state': payload.get('out_state'),
+            'seq': payload.get('seq'),
+            'battery': payload.get('battery')
+        }
+    )
     add_scan_record(record)
+    data = load_data()
+    mark_device_seen(data, device_id)
+    save_data(data)
     try:
         broadcast_event('scan', record)
     except Exception:

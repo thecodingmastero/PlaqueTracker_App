@@ -1,17 +1,16 @@
 /*
   Seeed XIAO ESP32-C3 + TCS3200
-  Sends classification + channel frequencies to PlaqueTracker over Wi-Fi (HTTPS).
+  Sends classification + channel frequencies to PlaqueTracker over Wi-Fi.
 
   Board package: "esp32" by Espressif (Arduino IDE Board Manager)
     - Board: "XIAO_ESP32C3" (or "Seeed Studio XIAO ESP32C3")
   Required libraries (Library Manager):
-    - (WiFi + WiFiClientSecure are bundled with the esp32 board package)
+    - (WiFi, WiFiClient, and WiFiClientSecure are bundled with the esp32 board package)
     - ESP32 BLE Arduino (optional; bundled with the esp32 board package)
 
   Set:
-    WIFI_SSID / WIFI_PASS
-    SERVER_HOST (Render app domain, no https://)
-    SERVER_PORT (443 for HTTPS)
+    USE_HTTPS=false, SERVER_HOST=your computer LAN IP, SERVER_PORT=8000 for local Flask
+    USE_HTTPS=true, SERVER_HOST=Render app domain, SERVER_PORT=443 for production
     DEVICE_KEY (optional; must match DEVICE_INGEST_KEY env var on server)
 
   Default TCS3200 pin mapping (XIAO ESP32-C3):
@@ -24,6 +23,7 @@
 */
 
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <string.h>
 #include <stdio.h>
@@ -48,10 +48,28 @@
 #define OUT_PIN D4
 #define LED_PIN D5
 
+// ── Connection settings ─────────────────────────────────────────────────────
+// USB-C testing with tools/arduino_serial_bridge.py:
+//   USB_SERIAL_ONLY=true
+//   The ESP32 prints readings over Serial. The Python bridge sends them to Flask.
+//
+// Local Flask testing:
+//   USB_SERIAL_ONLY=false
+//   USE_HTTPS=false
+//   SERVER_HOST="192.168.1.114"  // replace with the IP printed by Flask
+//   SERVER_PORT=8000
+//
+// Render production:
+//   USB_SERIAL_ONLY=false
+//   USE_HTTPS=true
+//   SERVER_HOST="plaquetracker-web.onrender.com"
+//   SERVER_PORT=443
+const bool USB_SERIAL_ONLY = true;
+const bool USE_HTTPS = false;
 const char DEFAULT_WIFI_SSID[] = "ORBI83";
 const char DEFAULT_WIFI_PASS[] = "sweetbolt655";
-const char SERVER_HOST[] = "plaquetracker-web.onrender.com";
-const int SERVER_PORT = 443;
+const char SERVER_HOST[] = "192.168.1.114";
+const int SERVER_PORT = 8000;
 const char DEVICE_ID[] = "xiao-esp32-c3";
 const char DEVICE_KEY[] = "";
 
@@ -80,9 +98,8 @@ const float PH_HIGH_SIDE_GAIN = 0.42f;
 const float NEUTRAL_PH_TARGET = 7.0f;
 const float NEUTRAL_PULL = 0.85f;
 
-// WiFiClientSecure provides TLS/HTTPS support on ESP32.
-// setInsecure() skips certificate validation (matches original behaviour).
-WiFiClientSecure client;
+WiFiClient httpClient;
+WiFiClientSecure httpsClient;
 
 uint32_t seqNum = 0;
 uint32_t lastSendMs = 0;
@@ -117,6 +134,46 @@ static inline float clampf(float v, float lo, float hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
   return v;
+}
+
+Client& activeClient() {
+  if (USE_HTTPS) return httpsClient;
+  return httpClient;
+}
+
+const char* transportName() {
+  return USE_HTTPS ? "HTTPS" : "HTTP";
+}
+
+void printServerConfig() {
+  Serial.print("Server: ");
+  Serial.print(SERVER_HOST);
+  Serial.print(":");
+  Serial.print(SERVER_PORT);
+  Serial.print(" ");
+  Serial.println(transportName());
+  Serial.print("Device ID: ");
+  Serial.println(DEVICE_ID);
+}
+
+int parseHttpStatusCode(const String& responseText) {
+  if (!responseText.startsWith("HTTP/1.")) return -1;
+  int firstSpace = responseText.indexOf(' ');
+  if (firstSpace < 0 || responseText.length() < firstSpace + 4) return -1;
+  return responseText.substring(firstSpace + 1, firstSpace + 4).toInt();
+}
+
+String readHttpResponse(Client& client, uint32_t timeoutMs = 3000) {
+  String payload = "";
+  uint32_t start = millis();
+  while ((millis() - start) < timeoutMs) {
+    while (client.available()) {
+      payload += (char)client.read();
+    }
+    if (!client.connected() && !client.available()) break;
+    delay(5);
+  }
+  return payload;
 }
 
 void trimLine(String &s) {
@@ -483,9 +540,31 @@ float phFromLabel(const char* label) {
   return -1.0f;
 }
 
+const char* colorNameFromLabel(const char* label) {
+  if (strcmp(label, "Low pH") == 0) return "Orange";
+  if (strcmp(label, "Neutral pH") == 0) return "Green";
+  if (strcmp(label, "High pH") == 0) return "Blue";
+  if (strcmp(label, "pH unclear") == 0) return "Yellow";
+  return "Unknown";
+}
+
+const char* rgbValueFromLabel(const char* label) {
+  if (strcmp(label, "Low pH") == 0) return "#F39C12";
+  if (strcmp(label, "Neutral pH") == 0) return "#2ECC71";
+  if (strcmp(label, "High pH") == 0) return "#3366FF";
+  if (strcmp(label, "pH unclear") == 0) return "#F7DC6F";
+  return "#94A3B8";
+}
+
+float confidenceFromLabel(const char* label) {
+  if (strcmp(label, "pH unclear") == 0 || strcmp(label, "NO SIGNAL") == 0) return 0.35f;
+  return 0.88f;
+}
+
 void ensureWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
+  Serial.println("WiFi not connected");
   if ((millis() - lastWifiRetryMs) < WIFI_RETRY_INTERVAL_MS) return;
   lastWifiRetryMs = millis();
 
@@ -494,11 +573,19 @@ void ensureWifi() {
 
 void postReading(float r, float g, float b, int outState, const char* label, float pH) {
   ensureWifi();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Reading not sent: WiFi not connected");
+    return;
+  }
 
   String json = "{";
   json += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
   json += "\"classification\":\"" + String(label) + "\",";
+  json += "\"colorName\":\"" + String(colorNameFromLabel(label)) + "\",";
+  json += "\"rgbValue\":\"" + String(rgbValueFromLabel(label)) + "\",";
   json += "\"pH\":" + String(pH, 2) + ",";
+  json += "\"estimatedPH\":" + String(pH, 2) + ",";
+  json += "\"confidence\":" + String(confidenceFromLabel(label), 2) + ",";
   json += "\"r_hz\":" + String(r, 1) + ",";
   json += "\"g_hz\":" + String(g, 1) + ",";
   json += "\"b_hz\":" + String(b, 1) + ",";
@@ -506,8 +593,17 @@ void postReading(float r, float g, float b, int outState, const char* label, flo
   json += "\"seq\":" + String(seqNum++);
   json += "}";
 
+  Client& client = activeClient();
+  client.stop();
+  Serial.print("POST /api/device-ingest -> ");
+  Serial.print(SERVER_HOST);
+  Serial.print(":");
+  Serial.print(SERVER_PORT);
+  Serial.print(" ");
+  Serial.println(transportName());
+
   if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-    Serial.println("HTTP connect failed");
+    Serial.println("HTTP connect failed: Server unreachable");
     return;
   }
 
@@ -525,12 +621,16 @@ void postReading(float r, float g, float b, int outState, const char* label, flo
   client.println();
   client.println(json);
 
-  uint32_t start = millis();
-  while (client.connected() && (millis() - start < 2000)) {
-    while (client.available()) {
-      char c = client.read();
-      Serial.write(c);
-    }
+  String response = readHttpResponse(client, 3000);
+  int statusCode = parseHttpStatusCode(response);
+  if (statusCode >= 200 && statusCode < 300) {
+    Serial.print("Reading POST OK HTTP ");
+    Serial.println(statusCode);
+  } else if (statusCode > 0) {
+    Serial.print("Reading POST failed HTTP ");
+    Serial.println(statusCode);
+  } else {
+    Serial.println("Reading POST failed: no HTTP response");
   }
   client.stop();
 }
@@ -544,8 +644,22 @@ bool parseScanningEnabled(String responseText) {
 
 bool fetchScanningEnabled() {
   ensureWifi();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Control check failed: WiFi not connected");
+    return scanningEnabled;
+  }
+
+  Client& client = activeClient();
+  client.stop();
+  Serial.print("Heartbeat/control check -> ");
+  Serial.print(SERVER_HOST);
+  Serial.print(":");
+  Serial.print(SERVER_PORT);
+  Serial.print(" ");
+  Serial.println(transportName());
+
   if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-    Serial.println("Control check failed: connect");
+    Serial.println("Control check failed: Server unreachable");
     return scanningEnabled;
   }
 
@@ -561,16 +675,26 @@ bool fetchScanningEnabled() {
   client.println("Connection: close");
   client.println();
 
-  String payload = "";
-  uint32_t start = millis();
-  while (client.connected() && (millis() - start < 2000)) {
-    while (client.available()) {
-      payload += (char)client.read();
-    }
-  }
+  String payload = readHttpResponse(client, 3000);
   client.stop();
 
-  return parseScanningEnabled(payload);
+  int statusCode = parseHttpStatusCode(payload);
+  if (statusCode >= 200 && statusCode < 300) {
+    bool enabled = parseScanningEnabled(payload);
+    Serial.print("Heartbeat sent OK HTTP ");
+    Serial.print(statusCode);
+    Serial.print(" scanning_enabled=");
+    Serial.println(enabled ? "true" : "false");
+    return enabled;
+  }
+
+  if (statusCode > 0) {
+    Serial.print("Control check failed HTTP ");
+    Serial.println(statusCode);
+  } else {
+    Serial.println("Control check failed: no HTTP response");
+  }
+  return scanningEnabled;
 }
 
 void setup() {
@@ -580,6 +704,16 @@ void setup() {
   while (!Serial && (millis() - serialWaitStart) < 8000) {
     delay(20);
   }
+
+  Serial.println();
+  Serial.println("PlaqueTracker XIAO ESP32-C3 TCS3200 starting");
+  Serial.println("Serial Monitor baud: 115200");
+  if (USB_SERIAL_ONLY) {
+    Serial.println("Mode: USB serial only. Keep tools/arduino_serial_bridge.py running to connect to Flask.");
+  } else {
+    printServerConfig();
+  }
+  Serial.println("TCS3200 wiring: S0=D0/GPIO2 S1=D1/GPIO3 S2=D2/GPIO4 S3=D3/GPIO5 OUT=D4/GPIO6 LED=D5/GPIO7");
 
   pinMode(S0, OUTPUT);
   pinMode(S1, OUTPUT);
@@ -595,19 +729,26 @@ void setup() {
   digitalWrite(S0, HIGH);
   digitalWrite(S1, LOW);
 
-  // Skip certificate verification — matches the original sketch's behaviour.
-  // For production use, supply a CA certificate with client.setCACert(...).
-  client.setInsecure();
+  if (!USB_SERIAL_ONLY && USE_HTTPS) {
+    // Skip certificate verification for simple Render testing.
+    // For production use, supply a CA certificate with httpsClient.setCACert(...).
+    httpsClient.setInsecure();
+  }
 
-  ensureWifiSetup();
-  setupBle();
-  Serial.println("READY: BLE primary, WiFi fallback");
+  if (!USB_SERIAL_ONLY) {
+    ensureWifiSetup();
+    printServerConfig();
+    setupBle();
+    Serial.println("READY: BLE primary, WiFi fallback");
+  } else {
+    Serial.println("READY: USB serial sensor output");
+  }
 }
 
 void loop() {
-  bool bleActive = bleTransportActive();
+  bool bleActive = USB_SERIAL_ONLY ? false : bleTransportActive();
 
-  if (millis() - lastControlCheckMs >= CONTROL_CHECK_INTERVAL_MS) {
+  if (!USB_SERIAL_ONLY && millis() - lastControlCheckMs >= CONTROL_CHECK_INTERVAL_MS) {
     if (bleActive) {
       scanningEnabled = true;
     } else {
@@ -651,9 +792,9 @@ void loop() {
   Serial.print("  est_pH=");
   Serial.println(pH, 2);
 
-  bool sentOverBle = publishBleReading(r, g, b, label, pH);
+  bool sentOverBle = USB_SERIAL_ONLY ? false : publishBleReading(r, g, b, label, pH);
 
-  if (pH > 0.0f && !sentOverBle && (millis() - lastSendMs >= SEND_INTERVAL_MS)) {
+  if (!USB_SERIAL_ONLY && pH > 0.0f && !sentOverBle && (millis() - lastSendMs >= SEND_INTERVAL_MS)) {
     postReading(r, g, b, outState, label, pH);
     lastSendMs = millis();
   }
