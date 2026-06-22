@@ -72,6 +72,18 @@ In Arduino IDE:
 
 ### 3. Find the current USB port
 
+On Windows, check Device Manager under **Ports (COM & LPT)** or run:
+
+```powershell
+Get-CimInstance Win32_SerialPort | Select-Object DeviceID,Name,Description
+```
+
+Use the `COM` port shown for the board, for example:
+
+```text
+COM5
+```
+
 On macOS, the port may change after upload/reset:
 
 ```bash
@@ -86,11 +98,19 @@ Use the `usbmodem` port, for example:
 
 ### 4. Start the Flask app
 
-From the repo root:
+On Windows, use **two PowerShell terminals** from the repo root.
 
-```bash
-pip install -r services/web/requirements.txt
-.venv/bin/python services/web/app.py
+In **Terminal 1**, start the web app:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r services\web\requirements.txt
+.\.venv\Scripts\python.exe services\web\app.py
+```
+
+Keep Terminal 1 open. The app is running correctly when you see a line like:
+
+```text
+Running on http://127.0.0.1:8000
 ```
 
 Open:
@@ -101,17 +121,19 @@ http://127.0.0.1:8000/scans
 
 ### 5. Start the USB bridge
 
-In a second terminal:
+In **Terminal 2**, start the USB serial bridge:
 
-```bash
-.venv/bin/python tools/arduino_serial_bridge.py \
-  --port /dev/cu.usbmodem14301 \
-  --baud 115200 \
-  --web-url http://127.0.0.1:8000 \
+```powershell
+.\.venv\Scripts\python.exe tools\arduino_serial_bridge.py `
+  --port COM5 `
+  --baud 115200 `
+  --web-url http://127.0.0.1:8000 `
   --device-id xiao-esp32-c3
 ```
 
-Replace `/dev/cu.usbmodem14301` with your current port if it changed.
+Replace `COM5` with your current Windows port if it changed. On macOS, use the `/dev/cu.usbmodem...` port instead.
+
+Keep Terminal 2 open while scanning. This bridge reads the ESP32 USB serial output and sends readings to the Flask app in Terminal 1.
 
 Good output looks like:
 
@@ -148,6 +170,7 @@ t=... R=...Hz G=...Hz B=...Hz R/B=... raw_pH=... => Neutral pH est_pH=7.00
 | Problem | What it means | Fix |
 |---|---|---|
 | `Resource busy` | Arduino Serial Monitor or another bridge is using the port | Close Serial Monitor, stop old bridge, rerun |
+| `Access is denied` for `COMx` on Windows | Another app has the serial port open | Close Arduino Serial Monitor and stop any old bridge process, then rerun |
 | `No such file or directory` for `/dev/cu.usbmodem...` | The port changed | Run `ls /dev/cu.*` and use the new `usbmodem` port |
 | `Connection refused` from `127.0.0.1:8000` | Flask is not running | Run `.venv/bin/python services/web/app.py` |
 | `NO SIGNAL` / `R=0 G=0 B=0` | ESP32 sees no pulses from TCS3200 `OUT` | Check `OUT -> D4/GPIO6`, `VCC`, `GND`, `S0`, `S1` |
